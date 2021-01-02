@@ -29,7 +29,7 @@ breakdown of pulse lengths is not displayed, press 'B' to enabled it.
 
 Example output from DCC++ Classic (5V via optoisolator 6N137, Main Track):
 
-code(
+
 Bit Count=29881 (Zeros=6710, Ones=23171), Glitches=0
 Packets received=610, Checksum Error=0, Lost pkts=0, Long pkts=0
 0 half-bit length (us): 100.0 (99-101), 1 half-bit length (us): 58.0 (57-59)
@@ -43,4 +43,3 @@ IRC Duration (us): 23.9 (22-34),  CPU load: 35%
 101	   0	    724
 --------------------------------------------
 Idle 
-)
