@@ -22,7 +22,7 @@ interrupt time within the DccDiagnostics sketch.  Fleeting interrupts
 are optionally filtered and counted.
 
 In between statistics output, received DCC frames are decoded and 
-printed; duplicate frames are not printed more than once per period.
+printed; duplicate throttle frames are not printed more than once per period.
 
 Press '?' to see help of the commands available.  By default the 
 breakdown of pulse lengths is not displayed, press 'B' to enabled it.
