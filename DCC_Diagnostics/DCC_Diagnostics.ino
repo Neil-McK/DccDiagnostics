@@ -25,7 +25,7 @@
 // Also tried on ESP8266 (NodeMCU) and ESP32 (Heltek Kit 32) but not extensively tested.
 // It does run, and will decode bits on the input pin which is GPIO5, labelled D1 on the NodeMCU.
 // The faster clock speeds on the ESP8266/ESP32 mean that interrupt jitter is less, but there is 
-// still around +/- 5us evident on the ESP8266.  Also, the ESP8266 and ESP32 micros() do
+// still around +/- 4us evident on the ESP8266.  Also, the ESP8266 and ESP32 micros() do
 // actually give a resolution of 1 microsecond (as opposed to 4us on the Arduino).  These
 // architectures require some inspired way of eliminating the effects of other interrupts; for
 // example on the ESP32, there is the option of using the other CPU perhaps.

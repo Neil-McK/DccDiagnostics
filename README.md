@@ -8,27 +8,26 @@ Various ones are discussed on the internet, but if you use a 6N137 I
 would recommend a 1nF capacitor across the input pins 2 and 3 to stabilise
 the input, and use a pull-up resistor on the output pin 6 of 470 ohms 
 connected to +5V - a larger resistor (even the Arduino's internal pull-up)
-will generally work but will slow down the optocoupler.  No 
+will generally still work but will slow down the optocoupler.  No 
 pull-up resistor is required on pin 7.
+
+The default input pin used by the sketch depends on the target used.  For Arduino Uno and Nano, pin 8; 
+for Mega, pin 49.  For the ESP8266/ESP32 it's GPIO5 (D2 on the NodeMCU).
 
 The diagnostic program supports the Arduino Uno, Nano and Mega particularly.
 
-Measurements are performed at an accuracy of 1/16th of a microsecond using Timer1, 
-and calculation results are rounded to 1 microsecond.  For 
-increased compatibility, it is possible to use micros() instead but, 
+Measurements are performed at an accuracy of 1/16th of a microsecond using Timer1 input 
+capture mode, and calculation results are rounded to 1 microsecond.  For 
+increased compatibility with other microcontrollers, it is possible to use micros() instead but, 
 on an Arduino Uno/Nano/Mega, this introduces up to 4us error in the micros() result, plus up to
 6.5us uncertainty in the scheduling of the interrupt which samples
-the micros() value; consequently, the measured pulse length will regularly be wrong
-by up to 10.5us when using micros().
-
-The Timer1 module allows the time of a digital input change to be 
-captured through hardware at a resolution of up to 1/16th microsecond.
-I'm using a resolution of 1 microsecond only.
+the micros() value; consequently, the measured pulse length will frequently be wrong
+by up to 10.5us when using micros() on an Arduino.
 
 The sketch has also been compiled successfully for the ESP8266 and ESP32, 
 currently without any WiFi or Bluetooth interfaces.
-On these targets, the timing is performed using the millis() function.  Consequently, 
-some inaccuracies due to interrupts are still present, of the order of +/- 6us total.
+On these targets, the timing is performed using the micros() function.  Consequently, 
+some inaccuracies due to interrupts are still present, of the order of 4us either way.
 
 The sketch produces output to the Serial stream, by default
 once every 4 seconds.  The output statistics includes bit counts, 
