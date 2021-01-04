@@ -49,29 +49,32 @@ Example output from DCC++ Classic (5V direct connection, Main Track):
 
 ```
 -
-Bit Count=29836 (Zeros=6698, Ones=23138), Glitches=0
-Packets received=609, Checksum Error=0, Lost pkts=0, Long pkts=0
+Bit Count=29782 (Zeros=6687, Ones=23095), Glitches=0
+Packets received=608, Checksum Error=0, Lost pkts=0, Long pkts=0
 0 half-bit length (us): 100.0 (100-100) delta <= 1
 1 half-bit length (us): 58.0 (58-58) delta <= 1
 ------ Half-bit count by length (us) -------
-58      23139   23139
-100     6698    6698
+58	23095	23095
+100	6687	6687
 --------------------------------------------
 Idle 
 -
-Bit Count=27677 (Zeros=9544, Ones=18133), Glitches=0
-Packets received=477, Checksum Error=0, Lost pkts=0, Long pkts=0
+Bit Count=27022 (Zeros=10585, Ones=16436), Glitches=0
+Packets received=432, Checksum Error=0, Lost pkts=0, Long pkts=0
 0 half-bit length (us): 100.0 (100-100) delta <= 1
 1 half-bit length (us): 58.0 (58-58) delta <= 1
 ------ Half-bit count by length (us) -------
-58      23139   23139
-100     6698    6698
+58	16436	16435
+100	10586	10586
 --------------------------------------------
-Loc 3 Forw128 45  00000011 00111111 10101110 
+Loc 7012 Rev128  Stop   11011011 01100100 00111111 00000000 
+Loc 3 Forw128 25  00000011 00111111 10011010 
+
 -
+
 ```
 
-Same for DCC++ EX (5V direct connection, Main Track):
+Example output from DCC++ EX (5V direct connection, Main Track):
 
 ```
 -
