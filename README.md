@@ -13,6 +13,9 @@ pull-up resistor is required on pin 7.
 
 ![Recommended Optocoupler Circuit](DCC-Isolator-6N137.png "Recommended Optocoupler Circuit")
 
+If you're using an ESP8266 or ESP32 (3.3V supply) then the top of the resistor R3 should be
+connected to a 3.3V pin of the microcontroller, not the 5V supply.
+
 The default input pin used by the sketch depends on the target used.  For Arduino Uno and Nano, pin 8; 
 for Mega, pin 49.  For the ESP8266/ESP32 it's GPIO5 (D2 on the NodeMCU).
 
