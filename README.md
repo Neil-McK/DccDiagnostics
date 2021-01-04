@@ -11,6 +11,8 @@ connected to +5V - a larger resistor (even the Arduino's internal pull-up)
 will generally still work but will slow down the optocoupler.  No 
 pull-up resistor is required on pin 7.
 
+![Recommended Optocoupler Circuit](DCC Isolator (6N137 based with capacitor).png)
+
 The default input pin used by the sketch depends on the target used.  For Arduino Uno and Nano, pin 8; 
 for Mega, pin 49.  For the ESP8266/ESP32 it's GPIO5 (D2 on the NodeMCU).
 
