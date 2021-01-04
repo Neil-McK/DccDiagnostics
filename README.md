@@ -19,10 +19,11 @@ The diagnostic program supports the Arduino Uno, Nano and Mega particularly.
 Measurements are performed at an accuracy of 1/16th of a microsecond using Timer1 input 
 capture mode, and calculation results are rounded to 1 microsecond.  For 
 increased compatibility with other microcontrollers, it is possible to use micros() instead but, 
-on an Arduino Uno/Nano/Mega, this introduces up to 4us error in the micros() result, plus up to
+on an Arduino Uno/Nano/Mega, this introduces up to 3us error in the micros() result, plus up to
 6.5us uncertainty in the scheduling of the interrupt which samples
-the micros() value; consequently, the measured pulse length will frequently be wrong
-by up to 10.5us when using micros() on an Arduino.
+the micros() value; consequently, the measured pulse length will, approximately once every
+millisecond, be off by up to 10.5us when using micros() on an Arduino, and the rest of the time
+be up to 4us off.
 
 The sketch has also been compiled successfully for the ESP8266 and ESP32, 
 currently without any WiFi or Bluetooth interfaces.
