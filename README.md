@@ -1,7 +1,7 @@
 # DccDiagnostics
 
-Diagnostic/sniffer program for DCC analysis, based on Arduino target.
-The Arduino may be directly connected to another Arduino, e.g. in a
+Diagnostic/sniffer program for DCC analysis, based on an Arduino or ESP32 target.
+The controller may be directly connected to another controller of the same I/O voltage, e.g. in a
 DCC++ or DCC++ EX system, but if used to monitor DCC signals, which are
 normally bipolar 12-18V signals, an optocoupler circuit will be required.
 Various ones are discussed on the internet, but if you use a 6N137 I 
@@ -14,12 +14,13 @@ pull-up resistor is required on pin 7.
 ![Recommended Optocoupler Circuit](DCC-Isolator-6N137.png "Recommended Optocoupler Circuit")
 
 If you're using an ESP8266 or ESP32 (3.3V supply) then the top of the resistor R3 should be
-connected to a 3.3V pin of the microcontroller, not the 5V supply.
+connected to a 3.3V pin of the microcontroller, not the 5V supply.  The VCC terminal of the 
+6N137 should still be connected to +5V, or it should be replaced with a 3.3V tolerant optocoupler.
 
 The default input pin used by the sketch depends on the target used.  For Arduino Uno and Nano, pin 8; 
 for Mega, pin 49.  For the ESP8266/ESP32 it's GPIO5 (D2 on the NodeMCU).
 
-The diagnostic program supports the Arduino Uno, Nano and Mega particularly.
+The diagnostic program supports the Arduino Uno, Nano, Mega and ESP32 particularly.
 
 Measurements are performed at an accuracy of 1/16th of a microsecond using Timer1 input 
 capture mode, and calculation results are rounded to 1 microsecond.  For 
@@ -27,13 +28,14 @@ increased compatibility with other microcontrollers, it is possible to use micro
 on an Arduino Uno/Nano/Mega, this introduces up to 3us error in the micros() result, plus up to
 6.5us uncertainty in the scheduling of the interrupt which samples
 the micros() value; consequently, the measured pulse length will, approximately once every
-millisecond, be off by up to 10.5us when using micros() on an Arduino, and the rest of the time
+millisecond, be off by up to 10us when using micros() on an Arduino, and the rest of the time
 be up to 4us off.
 
 The sketch has also been compiled successfully for the ESP8266 and ESP32, 
 currently without any WiFi or Bluetooth interfaces.
-On these targets, the timing is performed using the micros() function.  Consequently, 
-some inaccuracies due to interrupts are still present, of the order of 4us either way.
+On the ESP8266, the timing is performed using the micros() function.  Consequently, 
+some inaccuracies due to interrupts are still present, of the order of 4us either way.  The ESP32
+uses its input capture mode which works very well.
 
 The sketch produces output to the Serial stream, by default
 once every 4 seconds.  The output statistics includes bit counts, 
@@ -43,7 +45,7 @@ interrupt time within the DccDiagnostics sketch.  Fleeting input state changes
 length can also be produced, to monitor the consistency of the DCC signal.
 
 In between statistics output, received DCC packets are decoded and 
-printed; duplicate throttle packets and idle packets are not printed more than once per period.
+printed; duplicate throttle packets and idle packets are however not printed more than once per period.
 
 Press '?' to see help of the commands available.  By default the 
 breakdown of pulse lengths is not displayed, press 'B' to enabled it.
