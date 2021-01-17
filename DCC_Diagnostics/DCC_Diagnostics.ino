@@ -1,7 +1,7 @@
 ///////////////////////////////////////////////////////
 //
 // Improve accuracy of timing and time calculations: NMcK Jan 2021
-// Add support for ESP8266 and ESP32: NMcK Jan 2021
+// Add support for compilation for ESP8266 and ESP32: NMcK Jan 2021
 // Use ICR for pulse measurements, and display pulse length histogram: NMcK Dec 2020
 // Add CPU load figures for the controller: NMcK December 2020
 // Count, and optionally filter, edge noise from input: NMcK December 2020
@@ -105,68 +105,46 @@
 // LED pin definitions.
 //#define LEDPIN_ACTIVE 13    // Shows interrupts being received, ie DCC active
 //#define LEDPIN_LOCOSPEED 3  // Driven from loco speed packet for loco 3
-//#define LEDPIN_DECODING 5   // lights when a packet with valid checksum is received
+//#define LEDPIN_DECODING 7   // lights when a packet with valid checksum is received
 //#define LEDPIN_FAULT 6      // Lights when a checksum error or glitch is encountered.
 
 #define SERIAL_SPEED 115200
 
+#if defined(USETIMER)
+  #if defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_NANO) 
+    #define INPUTPIN 8
+  #elif defined(ARDUINO_AVR_MEGA)
+    #define INPUTPIN 49
+  #elif defined(ESP_PLATFORM) || defined(ESP8266)
+    #define INPUTPIN 5
+  #endif
+#else
+  #if defined(ESP_PLATFORM) || defined(ESP8266)
+    #define INPUTPIN 5
+  #else
+    #define INPUTPIN 2
+  #endif
+#endif
+
 ////////////////////////////////////////////////////////
 
-#if defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_NANO)
-  #if defined(USETIMER)
-    #define INPUTPIN 8
-    #define TCNTn TCNT1 // TimerN Counter Register
-    #define ICRn ICR1   // TimerN Input Change Register
-    #define TCCRnB TCCR1B // TimerN configuration register
-    #define INTERRUPT_HANDLER ISR(TIMER1_CAPT_vect)  // ISR vector
-  #else
-    #define INPUTPIN 2
-    #define INTERRUPT_HANDLER void scan()
-  #endif
-#elif defined(ARDUINO_AVR_MEGA2560) || defined(ARDUINO_AVR_ADK)
-  #if defined(USETIMER)
-    #define INPUTPIN 49
-    #define TCNTn TCNT4 // TimerN Counter Register
-    #define ICRn ICR4   // TimerN Input Change Register
-    #define TCCRnB TCCR4B // TimerN configuration register
-    #define INTERRUPT_HANDLER ISR(TIMER4_CAPT_vect)  // ISR vector
-  #else
-    #define INPUTPIN 2
-    #define INTERRUPT_HANDLER void scan()
-  #endif
-#elif defined(ARDUINO_ESP8266_NODEMCU) || defined(ESP_PLATFORM)
-  // Other architectures (particularly ESP8266 / ESP32)
-  #define INPUTPIN 5    // GPIO5, NodeMCU pin D1
-  #undef USE_DIO2  // Not supported
-  #undef USETIMER  // Not supported
-  #define INTERRUPT_HANDLER void ICACHE_RAM_ATTR scan()
-#else 
-  #error This target MCU is not currently supported.
-#endif
-
-#if defined(USETIMER) 
-#define TICKSPERMICROSEC 16
-#else
-#define TICKSPERMICROSEC 1
-#endif
-
-#if defined(USE_DIO2)
+#if defined(USE_DIO2) && (defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_MEGA) || defined(ARDUINO_AVR_NANO))
 #define GPIO_PREFER_SPEED
 #include <DIO2.h>
-#define digitalRead(a) digitalRead2f(PIN(a))
-#define digitalWrite(a,b) digitalWrite2f(PIN(a),b)
-#define pinMode(a,b) pinMode2f(PIN(a),b)
-#define PIN(n) DP##n
+#define digitalWrite(pin,state) digitalWrite2(pin,state)
+#define digitalRead(pin) digitalRead2(pin)
+#endif
+
+#ifdef USETIMER
+  #include "EventTimer.h"
 #else
-#define PIN(n) n
+  #include "EventTimer_default.h"
 #endif
 
 const int nPackets=8; // Number of packet buffers
 const int pktLength=8; // Max length+1 in bytes of DCC packet
 const int minBitLength = 45; // microseconds (58 - 20% - 1)
 const int maxBitLength = 141; // microseconds (116 + 20% + 1)
-
-const int ticksPerSec = 16;  // Number of timer ticks per microsecond.
 
 // Statistics structure.  Sizes of counts are chosen to be large enough not to overflow.
 struct stats {
@@ -209,6 +187,7 @@ bool calibrated = false;
 unsigned long lastRefresh = 0;
 
 
+
 //=======================================================================
 // Perform the setup functions for the application.
 
@@ -216,21 +195,6 @@ void setup() {
   Serial.begin(SERIAL_SPEED);
   Serial.println(F("---"));
   Serial.print(F("DCC Packet Analyze initialising...  "));
-
-  #ifdef USETIMER
-  // Configure Timer1 to increment TCNT1 on a 2MHz clock,
-  // i.e. every 0.5us (no interrupt).
-  // Use Input Capture Pin ICP to capture time of input change.
-  TCCR1A = 0;
-  #if TICKSPERMICROSEC==2
-  TCCR1B = (1 << CS11); // Prescaler CLK/8
-  #elif TICKSPERMICROSEC==16
-  TCCR1B = (1 << CS10); // Prescaler CLK/1
-  #else
-  #error "TICKSPERMICROSEC" not 2 or 16.
-  #endif  
-  TCCR1B |= (1 << ICNC1); // Input capture noise canceller
-  #endif
 
   #ifdef LEDPIN_ACTIVE
   pinMode(LEDPIN_ACTIVE, OUTPUT);
@@ -249,6 +213,12 @@ void setup() {
   // External resistor is preferred as it can be lower, so 
   // improve the switching speed of the Optocoupler.
   pinMode(INPUTPIN, INPUT_PULLUP);
+
+  if (!EventTimer.inputCaptureMode()) {
+    // Output health warning...
+    Serial.println(F("\r\n** WARNING Measurements will occasionally be out up to ~10us either way **"));
+    Serial.println(F("**         because of difficulties with accurate timing in this mode.   **"));
+  }
   
   // Delay first output of statistics 
   lastRefresh = millis();
@@ -258,20 +228,13 @@ void setup() {
 // Main program loop.  
   
 void loop() {
+  static unsigned int innerSpareLoopCount = 0;
   bool somethingDone = false;
   
   if (millis() >= lastRefresh + (unsigned long)refreshTime * 1000) {
     
-    if (calibrated) {
-      
-      // Copy. reset, and output diagnostics.
-      if (showHeartBeat) Serial.println('-');
-      ClearDccData();
-      OutputStatistics(Serial);
-      
-    } else { 
-      
-      // Calibration was in progress but is now finished.
+    if (!calibrated) {
+      // Calibration cycle done, record the details.
       Serial.println(F("done."));
       Serial.print(F("Updates every "));
       Serial.print(refreshTime);
@@ -279,11 +242,20 @@ void loop() {
       Serial.println(F("---"));
       maxSpareLoopCountPerSec = activeStats.spareLoopCount / refreshTime;
       calibrated = true;
+      
       // Start recording data from DCC.
       ClearDccData();
-      beginBitDetection();
-      
+      if (!EventTimer.begin(INPUTPIN, capture)) {
+        Serial.println("Unable to start EventTimer, check configured pin");
+        while(1) ;
+      }
+    } else {
+      // Normal cycle, copy. reset, and output diagnostics.
+      if (showHeartBeat) Serial.println('-');
+      ClearDccData();
+      OutputStatistics(Serial);   
     } 
+   
     lastRefresh = millis();
     somethingDone = true;
   }
@@ -297,22 +269,30 @@ void loop() {
   //Increment CPU loop counter.  This is done if nothing else was.
   // If the counter never gets incremented, it means that the 
   // CPU is fully loaded doing other things and has no spare time.
-  if (!somethingDone) activeStats.spareLoopCount++; 
+  if (!somethingDone) {
+    if (++innerSpareLoopCount >= F_CPU/1000000L) {
+      activeStats.spareLoopCount++; 
+      innerSpareLoopCount = 0;
+    }
+  }
 
   UpdateLED();
 }
 
 //=======================================================================
-// ISR invoked on change of state of INPUTPIN.  
+// Function invoked (from interrupt handler) on change of state of INPUTPIN.  
 //  It measures the time between successive changes (half-cycle of DCC
 //  signal).  Depending on the value, it decodes 0 or a 1 for alternate 
-//  half-cycles.  A 0 bit is nominally 100us per half-cycle (NMRA says 90-10000us)
-//  and a 1 bit is nominally 58us (52-64us).  We treat a half-bit duration < 80us 
-//  as a '1' bit, and a duration >= 80us as a '0' bit. 
+//  half-cycles.  A 0 half-bit is nominally 100us per half-cycle (NMRA says 90-10000us)
+//  and a 1 half-bit is nominally 58us (52-64us).  We treat a half-bit duration < 80us 
+//  as a '1' half-bit, and a duration >= 80us as a '0' half-bit. 
 //  Prologue and framing bits are detected and stripped, and data bytes are
 //  then stored in the packet queue for processing by the main loop.
 //
-INTERRUPT_HANDLER {
+#if defined(ESP_PLATFORM) || defined(ESP8266)
+IRAM_ATTR
+#endif
+bool capture(unsigned long halfBitLengthTicks) {
   static byte preambleOneCount = 0;
   static boolean preambleFound = false;
   static int newByte = 0;   // Accumulator for input bits until complete byte found.
@@ -325,14 +305,11 @@ INTERRUPT_HANDLER {
   static byte altbit = 0;   // 0 for first half-bit and 1 for second.
   byte bitValue;
   
-  // The most critical parts are done first - read time of change, and state of digital input.
-  unsigned long currentInterruptTicks = ticks_cap();    // POINTA
+  // The most critical parts are done first - read state of digital input.
   byte diginState = digitalRead(INPUTPIN);
 
-  // Measure time since last valid interrupt.
-  unsigned int halfBitLengthTicks = (currentInterruptTicks - previousInterruptTicks);
-  // Calculate in microseconds, rounding to nearest microsecond.
-  unsigned int interruptInterval = (halfBitLengthTicks + TICKSPERMICROSEC/2) / TICKSPERMICROSEC;
+  // Calculate time between interrupts in microseconds.
+  unsigned int interruptInterval = halfBitLengthTicks / TICKSPERMICROSEC;
   
   // Precondition input?
   if (filterInput) {
@@ -341,21 +318,12 @@ INTERRUPT_HANDLER {
     if (interruptCount > 0 && (diginState == previousDiginState || interruptInterval <= 3)) {
       // No change in digital, or it was fleeting.  Ignore.
       activeStats.glitchCount++;
-      return;
+      return false;   // reject interrupt
     }
   }
   
   // If we get here, the interrupt looks valid, i.e. the digital input really did
   // change its state more than 3us after its last change.
-  // Modify timer to trigger on other edge.
-  #ifdef USETIMER
-  if (diginState) 
-    TCCRnB &= ~(1 << ICES1); // Capture next falling edge on input
-  else
-    TCCRnB |= (1 << ICES1); // Capture next rising edge on input
-  #endif
-
-
   // Calculate difference between current bit half and preceding one, rounding up to next microsecond.
   // This will only be recorded on alternate half-bits, i.e. where the previous and current half-bit
   // make a complete bit.
@@ -364,13 +332,12 @@ INTERRUPT_HANDLER {
 
   // Record input state and timer values ready for next interrupt
   previousDiginState = diginState;
-  previousInterruptTicks = currentInterruptTicks;
   previousHalfBitLengthTicks = halfBitLengthTicks;  
 
   // If first or second interrupt, then exit as the previous state is incomplete.
   if (interruptCount < 2) {
     interruptCount++;
-    return;
+    return true;
   }
 
   #ifdef LEDPIN_ACTIVE
@@ -493,50 +460,23 @@ INTERRUPT_HANDLER {
   digitalWrite(LEDPIN_ACTIVE, 0);
   #endif
 
-  // Calculate time taken in interrupt code between POINTA and POINTB, rounding up to next microsecond.
-  unsigned int interruptDuration = ((int)ticks() - (int)currentInterruptTicks + TICKSPERMICROSEC - 1) / TICKSPERMICROSEC;   // POINTB
+  // Calculate time taken in interrupt code between the measured time of event to POINTB.
+  
+  unsigned int interruptDuration = EventTimer.elapsedTicksSinceLastEvent() / TICKSPERMICROSEC;   // POINTB
   
   // Assume that there are about 25 cycles of instructions in this function that are not measured, and that
   // the prologue in dispatching the function (saving registers etc) is around 51 cycles and the epilogue
   // (restoring registers etc) is around 35 cycles.  This adds a further (51+25+35)/16MHz=6.9us to the calculation.
-  // See https://billgrundmann.wordpress.com/2009/03/02/the-overhead-of-arduino-interrupts/.
-  interruptDuration += 7;
+  // See https://billgrundmann.wordpress.com/2009/03/02/the-overhead-of-arduino-interrupts/.  However, if 
+  // the Input Capture mode is used, then this will be much smaller.  So ignore it.
+  //interruptDuration += 7;
   
   // Record result
   if (interruptDuration > activeStats.maxInterruptTime) activeStats.maxInterruptTime = interruptDuration;
   if (interruptDuration < activeStats.minInterruptTime) activeStats.minInterruptTime = interruptDuration;
   activeStats.totalInterruptTime += interruptDuration;
-}
 
-// ticks_cap() returns a 16-bit count of timer ticks.  If timer capture is used, then it is the
-// value of the input capture register ICRn, i.e. the value of the timer counter register TCNTn, captured
-// at the time the last digital input state change was detected.
-// This is more accurate than reading TCNTn within the interrupt routine, as the latter depends
-// on the time taken to dispatch the interrupt routine, which may be delayed by other interrupts.
-// To be called only from interrupt routine (where interrupts are disabled), since the CPU uses a temporary
-// register to provide consistency when reading the two bytes of IRCn.
-// If timer capture not used, then just return the current micros() value.
-unsigned int ticks_cap() {
-  #ifdef USETIMER
-  unsigned int temp = ICRn;
-  return temp;  
-  #else
-  return micros();
-  #endif
-}
-
-// ticks() returns the current value of the 16-bit timer counter register TCNTn.  When it overflows it 
-// goes back to zero.
-// To be called only from interrupt routine (where interrupts are disabled), since the CPU uses a temporary
-// register to provide consistency when reading the two bytes of TCNTn.
-// If timer capture not used, then just return the current micros() value.
-unsigned int ticks() {
-  #ifdef USETIMER
-  unsigned int temp = TCNTn;
-  return temp; 
-  #else
-  return micros();
-  #endif
+  return true; // Accept interrupt.
 }
 
 //=======================================================================
@@ -544,11 +484,7 @@ unsigned int ticks() {
 // all changes (0->1 and 1->0).
 
 void beginBitDetection() {
-  #ifdef USETIMER
-  TIMSK1 = (1 << ICIE1); // Input capture interrupt enable
-  #else
-  attachInterrupt(digitalPinToInterrupt(INPUTPIN), scan, CHANGE);
-  #endif
+  EventTimer.begin(INPUTPIN, capture);
 }
 
 //=======================================================================
@@ -585,11 +521,6 @@ void printPacket(int index) {
 void OutputStatistics(Print &output) {
 
   if (showDiagnostics) {
-    #ifndef USETIMER
-    // Output health warning...
-    output.println(F("** WARNING Measurements will occasionally be out up to ~10us either way **"));
-    output.println(F("**         because of difficulties with accurate timing in this mode.   **"));
-    #endif
     
     // These counts are for half-bits, so divide by two.
     output.print(F("Bit Count="));
@@ -652,7 +583,7 @@ void OutputStatistics(Print &output) {
       // Calculate and display cpu load
       unsigned long spareLoopCountPerSec = lastStats.spareLoopCount / refreshTime;
       output.print(F(",  CPU load: "));
-      output.print(100 - spareLoopCountPerSec  / (maxSpareLoopCountPerSec / 100));
+      output.print(100.0f * (1.0f - (float)spareLoopCountPerSec / maxSpareLoopCountPerSec), 1);
       output.print(F("%"));
       output.println();
     }
