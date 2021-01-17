@@ -22,33 +22,33 @@ for Mega, pin 49.  For the ESP8266/ESP32 it's GPIO5 (D2 on the NodeMCU).
 
 The diagnostic program supports the Arduino Uno, Nano, Mega and ESP32 particularly.
 
-Measurements are performed at an accuracy of 1/16th of a microsecond using Timer1 input 
+Measurements are performed at an accuracy of 1/2 or 1/16th microsecond using Timer1 input 
 capture mode, and calculation results are rounded to 1 microsecond.  For 
 increased compatibility with other microcontrollers, it is possible to use micros() instead but, 
 on an Arduino Uno/Nano/Mega, this introduces up to 3us error in the micros() result, plus up to
 6.5us uncertainty in the scheduling of the interrupt which samples
 the micros() value; consequently, the measured pulse length will, approximately once every
 millisecond, be off by up to 10us when using micros() on an Arduino, and the rest of the time
-be up to 4us off.
+be up to 3us off.
 
-The sketch has also been compiled successfully for the ESP8266 and ESP32, 
-currently without any WiFi or Bluetooth interfaces.
+The sketch also supports the ESP8266 and ESP32, currently without any WiFi or Bluetooth interfaces.
 On the ESP8266, the timing is performed using the micros() function.  Consequently, 
 some inaccuracies due to interrupts are still present, of the order of 4us either way.  The ESP32
-uses its input capture mode which works very well.
+uses its input capture mode which works very well and potentially can support a measurement accuracy of around 4ns.
 
 The sketch produces output to the Serial stream, by default
 once every 4 seconds.  The output statistics includes bit counts, 
-bit lengths, checksum errors, packets too long, and estimated 
-interrupt time within the DccDiagnostics sketch.  Fleeting input state changes
+bit lengths, checksum errors, packets too long, and 
+time spent within the interrupt code.  Fleeting input state changes
 (<= 3us) are optionally filtered and counted.  A break-down of pulse counts by 
 length can also be produced, to monitor the consistency of the DCC signal.
 
 In between statistics output, received DCC packets are decoded and 
 printed; duplicate throttle packets and idle packets are however not printed more than once per period.
 
-Press '?' to see help of the commands available.  By default the 
-breakdown of pulse lengths is not displayed, press 'B' to enabled it.
+Press '?' to see help of the commands available.  The 
+breakdown of pulse lengths is not displayed by default, press 'B' to enabled it.  
+Likewise, the CPU statistics are not displayed by default, press 'C' to enable them.
 
 ## Example Output
 
