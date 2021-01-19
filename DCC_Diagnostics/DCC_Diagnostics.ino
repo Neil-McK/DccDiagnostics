@@ -1,5 +1,7 @@
 ///////////////////////////////////////////////////////
 //
+// Add OLED, and web server support on ESP32: NMcK Jan 2021
+// Add capture for ESP32; refactor timers: NMcK Jan 2021
 // Improve accuracy of timing and time calculations: NMcK Jan 2021
 // Add support for compilation for ESP8266 and ESP32: NMcK Jan 2021
 // Use ICR for pulse measurements, and display pulse length histogram: NMcK Dec 2020
@@ -85,50 +87,13 @@
 //
 ////////////////////////////////////////////////////////
 
-// Uncomment the "#define USE_DIO2" to use the 'Fast digital i/o library' DIO2
-// in place of the normal digitalRead() and digitalWrite().
-// Reduces CPU load by about 17%.  Only applicable to Arduino Uno/Mega/Nano.
-#define USE_DIO2
+#include "Config.h"
 
-// Uncomment the "#define USETIMER" to perform the timing using the ATmega328's 
-// 16-bit timer instead of micros(). This enables a 1us resolution rather than 4us.
-// It also reduces load by about 7%, and because we can capture the 
-// Timer counter register (TCNTn) at the time of the digital change, it is immune to 
-// timing errors caused by other interrupts.
-// Works on Arduino Uno (Timer1/pin D8)
-//          Arduino Nano (Timer1/pin D8)
-//          Arduino Mega (Timer4/pin D49)
-// If we don't use this, then the selected input pin must support change interrupt 
-// (defaults to pin D2 on Uno, Nano and Mega, GPIO5 on ESP8266/ESP32.
-#define USETIMER 
 
-// LED pin definitions.
-//#define LEDPIN_ACTIVE 13    // Shows interrupts being received, ie DCC active
-//#define LEDPIN_LOCOSPEED 3  // Driven from loco speed packet for loco 3
-//#define LEDPIN_DECODING 7   // lights when a packet with valid checksum is received
-//#define LEDPIN_FAULT 6      // Lights when a checksum error or glitch is encountered.
-
-#define SERIAL_SPEED 115200
-
-#if defined(USETIMER)
-  #if defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_NANO) 
-    #define INPUTPIN 8
-  #elif defined(ARDUINO_AVR_MEGA)
-    #define INPUTPIN 49
-  #elif defined(ESP_PLATFORM) || defined(ESP8266)
-    #define INPUTPIN 5
-  #endif
-#else
-  #if defined(ESP_PLATFORM) || defined(ESP8266)
-    #define INPUTPIN 5
-  #else
-    #define INPUTPIN 2
-  #endif
-#endif
 
 ////////////////////////////////////////////////////////
 
-#if defined(USE_DIO2) && (defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_MEGA) || defined(ARDUINO_AVR_NANO))
+#if defined(USE_DIO2) && (defined(ARDUINO_UNO_NANO) || defined(ARDUINO_MEGA))
 #define GPIO_PREFER_SPEED
 #include <DIO2.h>
 #define digitalWrite(pin,state) digitalWrite2(pin,state)
@@ -141,8 +106,25 @@
   #include "EventTimer_default.h"
 #endif
 
+// On ESP32, add web server
+#if defined(ESP32) || defined(ESP8266)
+#include "HttpManager.h"
+#endif
+
+// Include OLED if required.
+#if defined(USE_OLED)
+#include "OledDisplay.h"
+#endif
+
+#if defined(ESP32) || defined(ESP8266) 
+#define INTERRUPT_SAFE IRAM_ATTR
+#else
+#define INTERRUPT_SAFE
+#endif
+
 const int nPackets=8; // Number of packet buffers
 const int pktLength=8; // Max length+1 in bytes of DCC packet
+// Range of bit lengths (us) for recording count by bit length.
 const int minBitLength = 45; // microseconds (58 - 20% - 1)
 const int maxBitLength = 141; // microseconds (116 + 20% + 1)
 
@@ -186,6 +168,7 @@ unsigned int packetHashList[64];
 bool calibrated = false;
 unsigned long lastRefresh = 0;
 
+char espBuffer[1024] = "";
 
 
 //=======================================================================
@@ -219,7 +202,17 @@ void setup() {
     Serial.println(F("\r\n** WARNING Measurements will occasionally be out up to ~10us either way **"));
     Serial.println(F("**         because of difficulties with accurate timing in this mode.   **"));
   }
+
+  #if defined(USE_OLED)
+  OledDisplay.begin(SDA_OLED, SCL_OLED);
+  OledDisplay.update("Initialising..");
+  #endif
   
+  #if defined(ESP32) || defined(ESP8266)
+  HttpManager.begin(ssid, password, dnsName);
+  HttpManager.setBuffer(&espBuffer[0]);
+  #endif
+
   // Delay first output of statistics 
   lastRefresh = millis();
 }
@@ -254,6 +247,13 @@ void loop() {
       if (showHeartBeat) Serial.println('-');
       ClearDccData();
       OutputStatistics(Serial);   
+
+      #if defined(ESP_PLATFORM) || defined(USE_OLED)
+      WriteStatistics(espBuffer, sizeof(espBuffer));
+      #endif
+      #if defined(USE_OLED)
+      OledDisplay.update(&espBuffer[0]);
+      #endif
     } 
    
     lastRefresh = millis();
@@ -276,6 +276,10 @@ void loop() {
     }
   }
 
+  #if defined(ESP32) || defined(ESP8266)
+  HttpManager.process();
+  #endif
+
   UpdateLED();
 }
 
@@ -289,10 +293,8 @@ void loop() {
 //  Prologue and framing bits are detected and stripped, and data bytes are
 //  then stored in the packet queue for processing by the main loop.
 //
-#if defined(ESP_PLATFORM) || defined(ESP8266)
-IRAM_ATTR
-#endif
-bool capture(unsigned long halfBitLengthTicks) {
+bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
+  
   static byte preambleOneCount = 0;
   static boolean preambleFound = false;
   static int newByte = 0;   // Accumulator for input bits until complete byte found.
@@ -300,14 +302,17 @@ bool capture(unsigned long halfBitLengthTicks) {
   static int inputByteNumber = 0;  // Number of bytes read into active dccPacket buffer so far
   static byte interruptCount = 0;
   static byte previousBitValue = 0, previousDiginState = 0;
-  static unsigned long previousInterruptTicks = 0;
   static unsigned int previousHalfBitLengthTicks = 0;
   static byte altbit = 0;   // 0 for first half-bit and 1 for second.
   byte bitValue;
-  
+
   // The most critical parts are done first - read state of digital input.
   byte diginState = digitalRead(INPUTPIN);
 
+  // Set a high bound on the half bit length
+  if (halfBitLengthTicks > 1200*TICKSPERMICROSEC) 
+    halfBitLengthTicks = 1200*TICKSPERMICROSEC; // microseconds.
+  
   // Calculate time between interrupts in microseconds.
   unsigned int interruptInterval = halfBitLengthTicks / TICKSPERMICROSEC;
   
@@ -523,7 +528,9 @@ void OutputStatistics(Print &output) {
   if (showDiagnostics) {
     
     // These counts are for half-bits, so divide by two.
-    output.print(F("Bit Count="));
+    output.print(F("Bit Count/"));
+    output.print(refreshTime);
+    output.print(F(" sec="));
     output.print(lastStats.count/2);
     output.print(F(" (Zeros="));
     output.print(lastStats.count0/2);
@@ -1056,4 +1063,42 @@ bool processCommands() {
     return true;
   } else
     return false;
+}
+
+
+// Write Statistics summary to a buffer for use by the HTTP Server and 
+// for writing to the OLED display.
+void WriteStatistics(char *buffer, size_t bufferSize) {
+  if (lastStats.count > 0) {
+    snprintf(buffer, bufferSize, 
+      "Bits/%d sec: %lu\n"
+      " 0: %lu 1: %lu\n"
+      "Lengths (us)\n"
+      " 0:%.1f (%u-%u)\n"
+      " 1:%.1f (%u-%u)\n"
+      "Frames: %u\n"
+      "CksumErr: %u\n", 
+      refreshTime,
+      lastStats.count/2, 
+      lastStats.count0/2,
+      lastStats.count1/2,
+      (double)lastStats.total0/lastStats.count0,
+      lastStats.min0,
+      lastStats.max0,
+      (double)lastStats.total1/lastStats.count1,
+      lastStats.min1,
+      lastStats.max1,
+      lastStats.packetCount,
+      lastStats.checksumError);
+  } else {
+    snprintf(buffer, bufferSize,
+      "Bits/%d sec: 0\n"
+      " 0: 0 1: 0\n"
+      "Lengths (us)\n"
+      " 0: N/A\n"
+      " 1: N/A\n"
+      "Frames: 0\n"
+      "CksumErr: 0\n", 
+      refreshTime);
+  }
 }

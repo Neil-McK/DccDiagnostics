@@ -3,6 +3,8 @@
  *  AtMega328 and AtMega2560 controllers, the functions use the Input Capture
  *  capability of the microcontroller to capture the timer value very precisely
  *  using hardware.
+ *  Since the Timer counter is limited to 16 bits, it will overflow if the interval exceeds 
+ *  about 32milliseconds, so we use micros() to determine if the counter has overflowed.
  *  
  */
 
@@ -14,7 +16,7 @@
 
 #define TICKSPERMICROSEC 2   // 2 (0.5us) or 16 (62.5ns)
 
-#if defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_NANO)
+#if defined(ARDUINO_UNO_NANO)
   #define ICP_INPUTPIN 8
   #define TCNTn TCNT1 // TimerN Counter Register
   #define ICRn ICR1   // TimerN Input Change Register
@@ -24,7 +26,7 @@
   #define ICIEn ICIE1  // Interrupt mask
   #define ICESn ICES1  // Mask
   #define CAPTURE_INTERRUPT TIMER1_CAPT_vect  // ISR vector
-#elif defined (ARDUINO_AVR_MEGA2560)
+#elif defined (ARDUINO_MEGA)
   #define ICP_INPUTPIN 49 
   #define TCNTn TCNT4 // TimerN Counter Register
   #define ICRn ICR4   // TimerN Input Change Register
@@ -84,10 +86,18 @@ public:
   void processInterrupt() {
     byte diginState = digitalRead2(this->pin);
     thisEventTicks = ICRn;
-    unsigned int eventSpacing = thisEventTicks - lastValidEventTicks;
+    unsigned long thisEventMicros = micros();
+
+    // Initially estimate time using micros values.
+    unsigned long eventSpacing = (thisEventMicros - lastValidEventMicros) * TICKSPERMICROSEC;
+    if (eventSpacing < 60000L) {
+      // Estimated time is well within range of timer count, so calculate ticks
+      eventSpacing = thisEventTicks - lastValidEventTicks;
+    }
     bool accepted = callUserHandler(eventSpacing);
     if (accepted) {
       lastValidEventTicks = thisEventTicks;
+      lastValidEventMicros = thisEventMicros;
     }
     // Set up input capture for next edge.
     if (diginState) 
@@ -105,6 +115,7 @@ public:
 private:
   EventHandler *callUserHandler = 0;
   unsigned int lastValidEventTicks = 0;
+  unsigned long lastValidEventMicros = 0;
   unsigned int thisEventTicks = 0;
   int pin = -1;
 };

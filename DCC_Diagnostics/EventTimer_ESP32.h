@@ -46,6 +46,7 @@ public:
     MCPWM0.int_ena.cap0_int_ena = 1;                            // Enable interrupt on CAP0 signal
     MCPWM0.int_ena.cap1_int_ena = 1;                            // Enable interrupt on CAP1 signal
     mcpwm_isr_register(MCPWM_UNIT_0, isr_handler, NULL, ESP_INTR_FLAG_IRAM, NULL); // Set ISR Handler
+    return true;
   };
 
 

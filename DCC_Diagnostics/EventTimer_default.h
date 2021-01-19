@@ -14,10 +14,10 @@
 
 #define TICKSPERMICROSEC 1
 
-#if defined(ESP_PLATFORM) || defined(ESP8266)
-  #define INTATTR IRAM_ATTR
+#if defined(ESP32) || defined(ESP8266)
+  #define INTERRUPT_SAFE IRAM_ATTR
 #else
-  #define INTATTR
+  #define INTERRUPT_SAFE
 #endif
 
 // Predeclare event handler function for later...
@@ -47,11 +47,11 @@ public:
     return true;
   };
   
-  unsigned long INTATTR elapsedTicksSinceLastEvent() {
+  unsigned long INTERRUPT_SAFE elapsedTicksSinceLastEvent() {
     return micros() - thisEventTicks;
   };
   
-  void INTATTR processInterrupt(unsigned long thisEventTicks) {
+  void INTERRUPT_SAFE processInterrupt(unsigned long thisEventTicks) {
     this->thisEventTicks = thisEventTicks;
     unsigned long eventSpacing = thisEventTicks - lastValidEventTicks;
     bool accepted = callUserHandler(eventSpacing);
@@ -73,7 +73,7 @@ int interruptCount;
 
 EventTimerClass EventTimer;
 
-void INTATTR eventHandler() {
+void INTERRUPT_SAFE eventHandler() {
   EventTimer.processInterrupt(micros());
 }
 
