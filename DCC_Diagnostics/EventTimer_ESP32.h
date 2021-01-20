@@ -1,5 +1,7 @@
 /* 
- *  Timer functions for measuring elapsed time between events.  On this platform,
+ * EventTimer_ESP32.h
+ * 
+ *  Timer functions for measuring elapsed time between events.  On the ESP32 platform,
  *  the functions use the os-provided input capture support functions.
  */
 
@@ -28,6 +30,8 @@ static void IRAM_ATTR isr_handler(void *);
 class EventTimerClass {
 public:
 
+  // Initialise the object instance, validating that the input pin is
+  //  correct and noting the reference to the user handler for future use.
   bool begin(int pin, EventHandler userHandler) {
     this->pin = pin;
     this->callUserHandler = userHandler;
@@ -49,16 +53,21 @@ public:
     return true;
   };
 
-
-  // I couldn't find a way of retrieving the current ICP timer value, only the captured one.
-  // Until I can find one, here's a work-around that uses the micros() function.  It's not 
-  // used for timing events, so isn't particularly critical.
+  // Utility function to give number of ticks since the last event.  Useful 
+  //  for determining how much time has elapsed within the interrupt handler since
+  //  the interrupt was triggered.
+  //  I couldn't find a way of retrieving the current ICP timer value, only the captured one.
+  //  Until I can find one, here's a work-around that uses the micros() function.  It's not 
+  //  used for timing events, so isn't particularly critical.
   unsigned long IRAM_ATTR elapsedTicksSinceLastEvent() {
     return (micros() - thisEventMicros) * TICKSPERMICROSEC;
   };
 
-  // Object's Interrupt Handling (called from the static interrupt handler).
-  void IRAM_ATTR processInterrupt() {
+  // Function called from the interrupt handler to calculate the gap between interrupts,
+  //  and to invoke the user program's handler.  The user's handler is passed the 
+  //  number of ticks elapsed since the last valid interrupt.  It returns true/false to 
+  //  indicate if this interrupt is deemed to be 'valid' or not.
+   void IRAM_ATTR processInterrupt() {
     // Get current micros() value to support elapsedTicksSinceLastEvent().
     thisEventMicros = micros();
 
@@ -83,6 +92,14 @@ public:
     }
   };
 
+  // Utility function to return the number of timer ticks per microsecond.  
+  // On the ESP32, this is normally 80 but can be adjusted through a prescaler.
+  unsigned int ticksPerMicrosec() {
+    return TICKSPERMICROSEC;
+  };
+
+  // Utility function to inform whether input capture is in use or not.  For this
+  //  version, it always returns true.
   bool inputCaptureMode() { return true; };
 
 private:
@@ -90,7 +107,7 @@ private:
   unsigned long lastValidEventTicks = 0;
   unsigned long thisEventMicros = 0;
   int pin = -1;
-};
+} /* class EventTimerClass */;
 
 EventTimerClass EventTimer;
 

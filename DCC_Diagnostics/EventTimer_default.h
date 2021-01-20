@@ -1,5 +1,7 @@
 /* 
- *  Timer functions for measuring elapsed time between events.  On this platform,
+ * EventTimer_default.h
+ * 
+ *  Timer functions for measuring elapsed time between events.  In this version,
  *  the functions use the micros() function available on all Arduino controllers
  *  as well as ESP8266, ESP32 etc.
  *  
@@ -14,6 +16,8 @@
 
 #define TICKSPERMICROSEC 1
 
+// ESP platform must have IRAM_ATTR on any function called from
+//  interrupt handlers, so that they aren't executed from flash.
 #if defined(ESP32) || defined(ESP8266)
   #define INTERRUPT_SAFE IRAM_ATTR
 #else
@@ -35,6 +39,8 @@ typedef bool EventHandler(unsigned long eventSpacing);
 class EventTimerClass {
 public:
 
+  // Initialise the object instance, validating that the input pin is
+  //  correct and noting the reference to the user handler for future use.
   bool begin(int pin, EventHandler userHandler) {
     this->pin = pin;
     int interruptNumber = digitalPinToInterrupt(pin);
@@ -47,11 +53,18 @@ public:
     return true;
   };
   
+  // Utility function to give number of ticks since the last event.  Useful 
+  //  for determining how much time has elapsed within the interrupt handler since
+  //  the interrupt was triggered.
   unsigned long INTERRUPT_SAFE elapsedTicksSinceLastEvent() {
     return micros() - thisEventTicks;
   };
   
-  void INTERRUPT_SAFE processInterrupt(unsigned long thisEventTicks) {
+  // Function called from the interrupt handler to calculate the gap between interrupts,
+  //  and to invoke the user program's handler.  The user's handler is passed the 
+  //  number of ticks elapsed since the last valid interrupt.  It returns true/false to 
+  //  indicate if this interrupt is deemed to be 'valid' or not.
+   void INTERRUPT_SAFE processInterrupt(unsigned long thisEventTicks) {
     this->thisEventTicks = thisEventTicks;
     unsigned long eventSpacing = thisEventTicks - lastValidEventTicks;
     bool accepted = callUserHandler(eventSpacing);
@@ -60,6 +73,14 @@ public:
     }
   };
 
+  // Utility function to return the number of timer ticks per microsecond.  
+  //  With millis() as a counter, this is always 1.
+  unsigned int ticksPerMicrosec() {
+    return TICKSPERMICROSEC;
+  };
+
+  // Utility function to inform whether input capture is in use or not.  For this
+  //  version, it always returns false.
   bool inputCaptureMode() { return false; };
 
 private:
@@ -67,12 +88,12 @@ private:
   unsigned long lastValidEventTicks = 0;
   unsigned long thisEventTicks = 0;
   int pin = -1;
-};
+} /* class EventTimerClass */;
 
-int interruptCount;
-
+// Declare singleton class instance
 EventTimerClass EventTimer;
 
+// Interrupt handler for digital input change event.
 void INTERRUPT_SAFE eventHandler() {
   EventTimer.processInterrupt(micros());
 }

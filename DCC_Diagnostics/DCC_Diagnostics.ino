@@ -1,5 +1,6 @@
 ///////////////////////////////////////////////////////
 //
+// Move configuration items to config.h: NMcK Jan 2021
 // Add OLED, and web server support on ESP32: NMcK Jan 2021
 // Add capture for ESP32; refactor timers: NMcK Jan 2021
 // Improve accuracy of timing and time calculations: NMcK Jan 2021
@@ -55,12 +56,12 @@
 //    DCC on, SpareLoopCount=768830 (over 4 secs)
 //    CPU Load = (1043042-766830)/1043042*100 = 26%
 //
-// Loco address 3's speed command is optionally mapped onto PWM output pin 3, allowing an 
+// Loco address 3's speed command is optionally mapped onto a PWM output pin, allowing an 
 // LED to be used to confirm that a controller is able to send recognisable 
 // DCC commands.
 //
 // When outputting decoded DCC packets, duplicate loco speed packets and idle packets encountered
-// within a time period will be suppressed (as they are sent continuously).  However, all 
+// within a time period will not be logged (as they are sent continuously).  However, all 
 // accessory and loco function packets are displayed, even if repeated.
 //
 // Set the Serial Monitor Baud Rate to 115200 !!
@@ -87,9 +88,8 @@
 //
 ////////////////////////////////////////////////////////
 
+// Configurable parameter items now in separate include file.
 #include "Config.h"
-
-
 
 ////////////////////////////////////////////////////////
 
@@ -116,6 +116,9 @@
 #include "OledDisplay.h"
 #endif
 
+// Statistics structures
+#include "DccStats.h"
+
 #if defined(ESP32) || defined(ESP8266) 
 #define INTERRUPT_SAFE IRAM_ATTR
 #else
@@ -124,21 +127,6 @@
 
 const int nPackets=8; // Number of packet buffers
 const int pktLength=8; // Max length+1 in bytes of DCC packet
-// Range of bit lengths (us) for recording count by bit length.
-const int minBitLength = 45; // microseconds (58 - 20% - 1)
-const int maxBitLength = 141; // microseconds (116 + 20% + 1)
-
-// Statistics structure.  Sizes of counts are chosen to be large enough not to overflow.
-struct stats {
-  unsigned long count=0, count0=0, count1=0;
-  unsigned int packetCount=0, checksumError=0, countLongPackets=0, countLostPackets=0;
-  unsigned int max1=0, min1=65535, max0=0, min0=65535;
-  unsigned long total1=0, total0=0, totalInterruptTime=0;
-  unsigned int maxInterruptTime=0, minInterruptTime=65535;
-  unsigned int max1BitDelta=0, max0BitDelta=0;
-  unsigned long glitchCount=0, spareLoopCount=0;
-  unsigned int countByLength[2][maxBitLength-minBitLength+1];
-};
 
 // Variables shared by interrupt routine and main loop
 volatile byte dccPacket[nPackets][pktLength]; // buffer to hold packets 
@@ -168,8 +156,14 @@ unsigned int packetHashList[64];
 bool calibrated = false;
 unsigned long lastRefresh = 0;
 
+// Buffer for HTTP and OLED output.
+#if defined(ESP32)
 char espBuffer[1024] = "";
-
+char pktBuffer[512] = "";
+#else
+char espBuffer[1] = "";
+char pktBuffer[1] = "";
+#endif
 
 //=======================================================================
 // Perform the setup functions for the application.
@@ -177,7 +171,7 @@ char espBuffer[1024] = "";
 void setup() {
   Serial.begin(SERIAL_SPEED);
   Serial.println(F("---"));
-  Serial.print(F("DCC Packet Analyze initialising...  "));
+  Serial.println(F("DCC Packet Analyze initialising"));
 
   #ifdef LEDPIN_ACTIVE
   pinMode(LEDPIN_ACTIVE, OUTPUT);
@@ -215,6 +209,8 @@ void setup() {
 
   // Delay first output of statistics 
   lastRefresh = millis();
+
+  Serial.print(F("Calibrating... "));
 }
 
 //=======================================================================
@@ -239,7 +235,7 @@ void loop() {
       // Start recording data from DCC.
       ClearDccData();
       if (!EventTimer.begin(INPUTPIN, capture)) {
-        Serial.println("Unable to start EventTimer, check configured pin");
+        Serial.println(F("Unable to start EventTimer, check configured pin"));
         while(1) ;
       }
     } else {
@@ -266,7 +262,11 @@ void loop() {
   // Check for commands received over the USB serial connection.
   somethingDone |= processCommands();
     
-  //Increment CPU loop counter.  This is done if nothing else was.
+  #if defined(USE_OLED)
+  OledDisplay.checkButton();
+  #endif
+
+//Increment CPU loop counter.  This is done if nothing else was.
   // If the counter never gets incremented, it means that the 
   // CPU is fully loaded doing other things and has no spare time.
   if (!somethingDone) {
@@ -279,7 +279,7 @@ void loop() {
   #if defined(ESP32) || defined(ESP8266)
   HttpManager.process();
   #endif
-
+  
   UpdateLED();
 }
 
@@ -720,6 +720,10 @@ bool processDCC(Print &output) {
   return true;
 }
 
+void put(char buffer[], int len, int &pos, const char *str) {
+  strncpy(&buffer[pos], str, len);
+  pos += len;
+}
     
 //=======================================================================
 // Read data from the dccPacket structure and decode into 
@@ -731,18 +735,20 @@ void DecodePacket(Print &output, int inputPacket, bool isDifferentPacket) {
   byte decoderType; //0=Loc, 1=Acc
   unsigned int decoderAddress;
   byte speed;
+  char buffer[35];
+  char val1Buf[15], val2buf[15];
+  val1Buf[0] = val2buf[0] = '\0';
 
   // First determine the decoder type and address.
   if (dccPacket[inputPacket][1]==B11111111) { //Idle packet
     if (isDifferentPacket)
-      output.println(F("Idle "));
+      snprintf(buffer, sizeof(buffer), "Idle ");
     decoderType = 255;
   } else if (!bitRead(dccPacket[inputPacket][1],7)) { //bit7=0 -> Loc Decoder Short Address
     decoderAddress = dccPacket[inputPacket][1];
     instrByte1 = dccPacket[inputPacket][2];
     decoderType = 0;
-  }
-  else {
+  }  else {
     if (bitRead(dccPacket[inputPacket][1],6)) { //bit7=1 AND bit6=1 -> Loc Decoder Long Address
       decoderAddress = 256 * (dccPacket[inputPacket][1] & B00111111) + dccPacket[inputPacket][2];
       instrByte1 = dccPacket[inputPacket][3];
@@ -761,189 +767,194 @@ void DecodePacket(Print &output, int inputPacket, bool isDifferentPacket) {
       if (instrByte1 & B10000000) { // Basic Accessory
         decoderAddress = (((~instrByte1) & B01110000) << 2) + decoderAddress;
         byte port = (instrByte1&B00000110)>>1;
-        output.print(F("Acc "));
-        output.print((decoderAddress-1)*4 + port + 1);
-        output.print(' ');
-        output.print(decoderAddress);
-        output.print(F(":"));
-        output.print(port);
-        output.print(' ');
-        output.print(bitRead(instrByte1,3));
-        if (bitRead(instrByte1,0)) 
-          output.print(F(" On"));
-        else 
-          output.print(F(" Off"));
+        snprintf(buffer, sizeof(buffer), "Acc %d %d:%d %d %s",
+          (decoderAddress-1)*4 + port + 1,
+          decoderAddress,
+          port,
+          bitRead(instrByte1, 3),
+          bitRead(instrByte1, 0) ? " On" : "Off");
       } else { // Accessory Extended NMRA spec is not clear about address and instruction format !!!
-        output.print(F("Acc Ext "));
-        decoderAddress = (decoderAddress << 5) + ((instrByte1 & B01110000) >> 2) + ((instrByte1 & B00000110) >> 1);
-        output.print(decoderAddress);
-        output.print(F(" Asp "));
-        output.print(dccPacket[inputPacket][3],BIN);
+        itoa(dccPacket[inputPacket][3], val1Buf, 2); 
+        snprintf(buffer, sizeof(buffer), "Acc Ext %d Asp %s",
+          (decoderAddress << 5) + ((instrByte1 & B01110000) >> 2) + ((instrByte1 & B00000110) >> 1),
+          val1Buf);
       }
-      printPacket(inputPacket);
     }
   }
   else if (decoderType == 0)  { // Loco / Multi Function Decoder
     if (showLoc && isDifferentPacket) {
-      output.print(F("Loc "));
-      output.print(decoderAddress);
+      const char *op = "";
+      byte value;
       byte instructionType = instrByte1 >> 5;
       switch (instructionType) {
-
         case 0:
-          output.print(F(" Control "));
-        break;
+          snprintf(buffer, sizeof(buffer), "Loc%d Control", decoderAddress);
+          break;
 
         case 1: // Advanced Operations
           if (instrByte1==B00111111) { //128 speed steps
             if (bitRead(dccPacket[inputPacket][pktByteCount-1], 7)) 
-              output.print(F(" Forw128 "));
+              op = "Fw128";
             else 
-              output.print(F(" Rev128 "));
+              op = "Rv128";
             byte speed = dccPacket[inputPacket][pktByteCount-1] & B01111111;
             if (!speed) 
-              output.print(F(" Stop "));
+              op = "Stop";
             else if (speed==1) 
-              output.print(F(" E-stop "));
+              op = "Estop";
             else 
-              output.print(speed-1);
+              itoa(speed-1, val1Buf, 10);
           } else if (instrByte1==B00111110) { //Speed Restriction
             if (bitRead(dccPacket[inputPacket][pktByteCount-1], 7)) 
-              output.print(F(" On "));
+              op = "On";
             else 
-              output.print(F(" Off "));
-            output.print(dccPacket[inputPacket][pktByteCount-1] & B01111111);
+              op = "Off";
+            itoa(dccPacket[inputPacket][pktByteCount-1] & B01111111, val1Buf, 10);;
           }
-        break;
+          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
+            decoderAddress, op, val1Buf);
+
+          break;
 
         case 2: // Reverse speed step
           speed = ((instrByte1 & B00001111) << 1) - 3 + bitRead(instrByte1,4);
           if (speed==253 || speed==254) 
-            output.print(F(" Stop "));
+            op = "Stop";
           else if (speed==255 || speed==0) 
-            output.print(F(" E-Stop "));
+            op = "EStop";
           else {
-            output.print(F(" Rev "));
-            output.print(speed);
+            op = "Rev";
+            itoa(speed, val1Buf, 10);
           }
-        break;
+          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
+            decoderAddress, op, val1Buf);
+          break;
 
         case 3: // Forward speed step
           speed = ((instrByte1 & B00001111) << 1) - 3 + bitRead(instrByte1,4);
           if (speed==253 || speed==254) 
-            output.print(F(" Stop "));
+            op = "Stop";
           else if (speed==255 || speed==0) 
-            output.print(F(" E-Stop "));
+            op = "EStop";
           else {
-            output.print(F(" Forw "));
-            output.print(speed);
+            op = "Forw";
+            itoa(speed, val1Buf, 10);
           }
-        break;
+          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
+            decoderAddress, op, val1Buf);
+          break;
 
         case 4: // Loc Function L-4-3-2-1
-          output.print(F(" L F4-F1 "));
-          output.print(instrByte1 & B00011111, BIN);
-        break;
+          op = "L F4-F1";
+          itoa(instrByte1 & B00011111, val1Buf, 2); // 5 bit binary
+          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
+            decoderAddress, op, val1Buf);
+          break;
 
         case 5: // Loc Function 8-7-6-5
           if (bitRead(instrByte1,4)) {
-            output.print(F(" F8-F5 "));
-            output.print(instrByte1 & B00001111, BIN);
+            op = "F8-F5";
+            itoa(instrByte1 & B00001111, val1Buf, 2); // 4 bit binary
           }
           else { // Loc Function 12-11-10-9
-            output.print(F(" F12-F9 "));
-            output.print(instrByte1 & B00001111, BIN);
+            op = "F12-F9";
+            itoa(instrByte1 & B00001111, val1Buf, 2); // 4 bit binary
           }
-        break;
-
-        default: 
-          output.print(F(" unknown"));
-        break;
+          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
+            decoderAddress, op, val1Buf);
+          break;
 
         case 6: // Future Expansions
-          switch (instrByte1&B00011111) {
+          switch (instrByte1 & B00011111) {
             case 0: // Binary State Control Instruction long form
-              output.print(F(" BinStateLong "));
-              output.print(256 * dccPacket[inputPacket][pktByteCount-1] + (dccPacket[inputPacket][pktByteCount-2] & B01111111));
-              if bitRead(dccPacket[inputPacket][pktByteCount-2], 7) output.print(F(" On "));
-              else output.print(F(" Off "));
-            break;
+              op = "BinLong";
+              itoa(256 * dccPacket[inputPacket][pktByteCount-1] + (dccPacket[inputPacket][pktByteCount-2] & B01111111),
+                val1Buf, 10);
+              if bitRead(dccPacket[inputPacket][pktByteCount-2], 7) strcpy(val2buf, "On");
+              else strcpy(val2buf, "Off");
+              break;
             case B00011101: // Binary State Control
-              output.print(F(" BinStateShort "));
-              output.print(dccPacket[inputPacket][pktByteCount-1] & B01111111);
-              if bitRead(dccPacket[inputPacket][pktByteCount-1], 7) output.print(F(" On "));
-              else output.print(F(" Off "));
-            break;
+              op = "BinShort";
+              itoa(dccPacket[inputPacket][pktByteCount-1] & B01111111, val1Buf, 10);
+              if bitRead(dccPacket[inputPacket][pktByteCount-1], 7) strcpy(val2buf, "On");
+              else strcpy(val2buf, "Off");
+              break;
             case B00011110: // F13-F20 Function Control
-              output.print(F(" F20-F13 "));
-              output.print(dccPacket[inputPacket][pktByteCount-1], BIN);
-            break;
+              op = "F20-F13";
+              itoa(dccPacket[inputPacket][pktByteCount-1], val1Buf, 2); // 8 bit binary
+              break;
             case B00011111: // F21-F28 Function Control
-              output.print(F(" F28-F21 "));
-              output.print(dccPacket[inputPacket][pktByteCount-1], BIN);
-            break;
+              op = "F28-F21";
+              itoa(dccPacket[inputPacket][pktByteCount-1], val1Buf, 2); // 8 bit binary
+              break;
             default:
-              output.print(F(" unknown"));
-            break;
+              op = "unknown";
+              break;
           }
-        break;
+          snprintf(buffer, sizeof(buffer), "Loc%d %s %s %s",
+            decoderAddress, op, val1Buf, val2buf);
+          break;
 
         case 7:
-          output.print(F(" CV "));
-          byte value = dccPacket[inputPacket][pktByteCount-1];
+          value = dccPacket[inputPacket][pktByteCount-1];
           if (instrByte1&B00010000) { // CV Short Form
             byte cvType=instrByte1 & B00001111;
             switch (cvType) {
               case B00000010:
-                output.print(F("23 "));
-                output.print(value);
-              break;
+                strcpy(val1Buf, "23");
+                break;
               case B00000011:
-                output.print(F("24 "));
-                output.print(value);
-              break;
+                strcpy(val1Buf, "24");
+                break;
               case B00001001:
-                output.print(F("Decoder Lock "));
-                output.print(value);
-              break;
+                strcpy(val1Buf, "Lock");
+                break;
               default:
-                output.print(F("unknown"));
-                output.print(' ');
-                output.print(value);
-              break;
+                strcpy(val1Buf, "Unknown");
+                break;
             }
+            snprintf(buffer, sizeof(buffer), "Loc%d CV %s %d",
+              decoderAddress, val1Buf, value);
           }
           else { // CV Long Form
             int cvAddress = 256 * (instrByte1 & B00000011) + dccPacket[inputPacket][pktByteCount-2] + 1;
-            output.print(cvAddress);
-            output.print(' ');
             switch (instrByte1 & B00001100) {
               case B00000100: // Verify Byte
-                output.print(F("Verify "));
-                output.print(value);
-              break;
+                strcpy(val1Buf, "Vrfy");
+                itoa(value, val2buf, 10);
+                break;
               case B00001100: // Write Byte
-                output.print(F("Write "));
-                output.print(value);
-              break;
+                strcpy(val1Buf, "Write");
+                itoa(value, val2buf, 10);
+                break;
               case B00001000: // Bit Write
-                output.print(F("Bit "));
-                if (value & B00010000) output.print(F("Verify "));
-                else output.print(F("Write "));
+                if (value & B00010000) strcpy(val1Buf, "BitVfy");
+                else strcpy(val1Buf, "BitWrt");
+                //*****************
                 output.print(value & B00000111);
                 output.print(' ');
                 output.print((value & B00001000)>>3);
-              break;
+                //*************
+                break;
               default:
-                output.print(F("unknown"));
-              break;
+                strcpy(val1Buf, "unknown");
+                break;
             }
+            snprintf(buffer, sizeof(buffer), "Loc%d CV%d %s %d",
+              decoderAddress, cvAddress, val1Buf, value);
           }
-        break;
+          break;
+
+        default: 
+          op = "unknown";
+          break;
       }
-      printPacket(inputPacket);
     }
   }
+  output.print(buffer);
+  printPacket(inputPacket);
+  strncat(pktBuffer, buffer, sizeof(pktBuffer));
+  strncat(pktBuffer, "\n", sizeof(pktBuffer));
 }
 
 //=======================================================================
@@ -1076,8 +1087,11 @@ void WriteStatistics(char *buffer, size_t bufferSize) {
       "Lengths (us)\n"
       " 0:%.1f (%u-%u)\n"
       " 1:%.1f (%u-%u)\n"
+      "Deltas: 0:<%d 1:<%d\n"
       "Frames: %u\n"
-      "CksumErr: %u\n", 
+      "CksumErr: %u\n"
+      "--\n"
+      "%s", 
       refreshTime,
       lastStats.count/2, 
       lastStats.count0/2,
@@ -1088,8 +1102,11 @@ void WriteStatistics(char *buffer, size_t bufferSize) {
       (double)lastStats.total1/lastStats.count1,
       lastStats.min1,
       lastStats.max1,
+      lastStats.max0BitDelta,
+      lastStats.max1BitDelta,
       lastStats.packetCount,
-      lastStats.checksumError);
+      lastStats.checksumError,
+      pktBuffer);
   } else {
     snprintf(buffer, bufferSize,
       "Bits/%d sec: 0\n"
@@ -1097,8 +1114,12 @@ void WriteStatistics(char *buffer, size_t bufferSize) {
       "Lengths (us)\n"
       " 0: N/A\n"
       " 1: N/A\n"
+      "Deltas: N/A\n"
       "Frames: 0\n"
-      "CksumErr: 0\n", 
+      "CksumErr: 0\n"
+      "--", 
       refreshTime);
   }
+  // Reinitialise packet buffer.
+  pktBuffer[0] = '\0';
 }
