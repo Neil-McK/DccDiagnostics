@@ -16,7 +16,7 @@
 // DCC packet analyze: Ruud Boer, October 2015
 //
 // The DCC signal is detected on Arduino digital pin 8 (ICP1 on Uno/Nano),
-// or pin 49 (ICP4 on Mega), or pin GPIO5 on ESP8266/ESP32.  This causes an interrupt,
+// or pin 49 (ICP4 on Mega), or pin GPIO2 on ESP8266/ESP32.  This causes an interrupt,
 // and in the interrupt response code the time between interrupts is measured.
 //
 // Use an opto-isolator between the track signal (~30V p-p) and the
@@ -26,11 +26,16 @@
 // should work on other architectures if simple options chosen (no USETIMER and
 // no USE_DIO2).
 //
-// Also tried on ESP8266 (NodeMCU) and ESP32 (Heltek Kit 32) but not extensively tested.
-// It does run, and will decode bits on the input pin which is GPIO5, labelled D1 on the NodeMCU.
+// Also tested on ESP8266 (NodeMCU and Heltec Kit 8) and ESP32 (Heltec Kit 32).  Both of these
+// support OLED display and HTTP server on WiFi.  See config.h for configuration options.
+// It will decode bits on the input pin which is GPIO2 for ESP8266 (labelled D4 on the NodeMCU) or 
+// GPIO5 on the ESP32.
+//
 // The faster clock speeds on the ESP8266/ESP32 mean that interrupt jitter is less, but there is 
 // still around +/- 4us evident on the ESP8266.  Also, the ESP8266 and ESP32, micros() does
-// actually give a resolution of 1 microsecond (as opposed to 4us on the Arduino).
+// actually give a resolution of 1 microsecond (as opposed to 4us on the Arduino).  The ESP32
+// gives the best performance and functionality, with its input capture capability alongside the 
+// OLED/Wifi.
 //
 // The use of ICPn on the Arduino and ESP32 enables accurate timing to within 1us.  The millis() 
 // function in the Arduino is no better than 10.5us or so accurate (6.5us interrupt jitter caused by the
@@ -121,7 +126,7 @@
 // Statistics structures and functions.
 #include "DccStatistics.h"
 
-const int nPackets=8; // Number of packet buffers
+const int nPackets=16; // Number of packet buffers
 const int pktLength=8; // Max length+1 in bytes of DCC packet
 
 // Variables shared by interrupt routine and main loop
@@ -278,6 +283,12 @@ void loop() {
     inactivityCount += DCCStatistics.getRefreshTime();
     if (inactivityCount > 120) {
       // Go to sleep after 2 minutes of inactivity.
+      #if defined(USE_OLED)
+      OledDisplay.reset();
+      OledDisplay.append("Going to sleep..");
+      #endif
+      Serial.println(F("*** Inactivity detected -- going to sleep ***"));
+      delay(5000);
       esp_deep_sleep_start();
     }
     #endif

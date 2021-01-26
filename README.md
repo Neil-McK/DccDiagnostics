@@ -19,20 +19,21 @@ The controller may be directly connected to another controller of the same I/O v
 DCC++ or DCC++ EX system, but if used to monitor DCC signals, which are
 normally bipolar 12-18V signals, an optocoupler circuit will be required.
 Various ones are discussed on the internet, but if you use a 6N137 I 
-would recommend a 1nF capacitor across the input pins 2 and 3 to stabilise
-the input, and use a pull-up resistor on the output pin 6 of 470 ohms 
-connected to +5V - a larger resistor (even the Arduino's internal pull-up)
+would recommend a 100nF capacitor across the DCC input to stabilise
+on the input, and use a pull-up resistor on the output pin 6 of 330 ohms (connected to 3.3V) or 470 ohms 
+(connected to 5V) - a larger resistor (even the Arduino's internal pull-up)
 will generally still work but will slow down the optocoupler.  No 
 pull-up resistor is required on pin 7.
 
 ![Recommended Optocoupler Circuit](DCC-Isolator-6N137.png "Recommended Optocoupler Circuit")
 
-If you're using an ESP8266 or ESP32 (3.3V supply) then the top of the resistor R3 should be
-connected to a 3.3V pin of the microcontroller, not the 5V supply.  The VCC terminal of the 
-6N137 should still be connected to +5V, or it should be replaced with a 3.3V tolerant optocoupler.
+If you're using an ESP8266 or ESP32 (3.3V supply) then, strictly, the 6N137 isn't rated for 3.3V.
+I've had good results running with a 3.3V supply, but ideally the top of the resistor R3 should be
+connected to a 3.3V pin of the microcontroller and VCC terminal of the 6N137 should still be 
+connected to +5V, or the optocoupler should be replaced with a 3.3V tolerant optocoupler.
 
 The default input pin used by the sketch depends on the target used.  For Arduino Uno and Nano, pin 8; 
-for Mega, pin 49.  For the ESP8266/ESP32 it's GPIO5 (D2 on the NodeMCU).
+for Mega, pin 49.  For the ESP8266/ESP32 it's GPIO2 (labelled D4 on the 8266 NodeMCU).
 
 The diagnostic program supports the Arduino Uno, Nano, Mega and ESP32 particularly.
 
@@ -57,7 +58,7 @@ a standard browser.  The device connects to WiFi using WPS during startup.  Pres
 resetting the device, and it should get its credentials from the router.  From that point onward, it will 
 connect using the same credentials by preference.
 
-![Example of output in web browser](WebInferface.PNG "Example of web output")
+![Example of output in web browser](WebInterface.PNG "Example of web output")
 
 ## Serial USB Output
 
@@ -83,13 +84,13 @@ Example Uno output from DCC++ Classic (5V direct connection, Main Track):
 -
 Bit Count=29782 (Zeros=6687, Ones=23095), Glitches=0
 Packets received=608, Checksum Error=0, Lost pkts=0, Long pkts=0
-0 half-bit length (us): 100.0 (100-100) delta <= 1
-1 half-bit length (us): 58.0 (58-58) delta <= 1
+0 half-bit length (us): 100.0 (100-100) delta < 1
+1 half-bit length (us): 58.0 (58-58) delta < 1
 ------ Half-bit count by length (us) -------
 58	23095	23095
 100	6687	6687
 --------------------------------------------
-Idle 
+Idle                    11111111 00000000
 -
 Bit Count=27022 (Zeros=10585, Ones=16436), Glitches=0
 Packets received=432, Checksum Error=0, Lost pkts=0, Long pkts=0
@@ -100,7 +101,7 @@ Packets received=432, Checksum Error=0, Lost pkts=0, Long pkts=0
 100	10586	10586
 --------------------------------------------
 Loc 7012 Rev128  Stop   11011011 01100100 00111111 00000000 
-Loc 3 Forw128 25  00000011 00111111 10011010 
+Loc 3 Forw128 25        00000011 00111111 10011010 
 
 -
 
@@ -112,10 +113,10 @@ Example Uno output from DCC++ EX (5V direct connection, Main Track):
 -
 Bit Count=27641 (Zeros=6910, Ones=20731), Glitches=0
 Packets received=628, Checksum Error=0, Lost pkts=0, Long pkts=0
-0 half-bit length (us): 116.0 (110-122) delta <= 13
-1 half-bit length (us): 58.0 (52-64) delta <= 13
+0 half-bit length (us): 116.0 (110-122) delta < 13
+1 half-bit length (us): 58.0 (52-64) delta < 13
 --------------------------------------------
-Idle 
+Idle                    11111111 00000000 
 -
 ```
 
@@ -123,27 +124,16 @@ Example ESP32 output from DCC++ (12V, 6N137 Optocoupler, Main Track):
 
 ```
 -
-Bit Count/4 sec=23173 (Zeros=16582, Ones=6591), Glitches=23173
-Packets received=144, Checksum Error=16, Lost pkts=0, Long pkts=16
+Bit Count/4 sec=28842 (Zeros=8611, Ones=20231), Glitches=0
+Packets received=430, Checksum Error=0, Lost pkts=0, Long pkts=0
 0 half-bit length (us): 99.5 (99-100) delta < 2
 1 half-bit length (us): 57.5 (57-58) delta < 2
-IRC Duration (us): 2.1 (1-3),  CPU load: 0.8%
------- Half-bit count by length (us) -------
-57      0       6591
-58      6591    0
-99      0       16582
-100     16582   0
---------------------------------------------
+IRC Duration (us): 2.1 (2-14),  CPU load: 34.0%
 --
-Loc 3 F20-F13 0         00000011 11011110 00000000
-Loc 3 Fwd128 3          00000011 00111111 10000100
-Loc 6889 Rev128 126     11011010 11101001 00111111 01111111
-Loc 6025 Fwd128 Stop    11010111 10001001 00111111 10000000
-Loc 7025 Rev128 Estop   11011011 01110001 00111111 00000001
-Loc 3 F8-F5 0           00000011 10110000
-Loc 3 F28-F21 0         00000011 11011111 00000000
-Loc 3 L F4-F1 0         00000011 10000000
-Loc 3 F12-F9 0          00000011 10100000
+Loc 8683 Fwd128 25      11100001 11101011 00111111 10011010
+Loc 7025 Fwd128 25      11011011 01110001 00111111 10011010
+Loc 7130 Fwd128 25      11011011 11011010 00111111 10011010
+Loc 6025 Fwd128 25      11010111 10001001 00111111 10011010
 -
 ```
 

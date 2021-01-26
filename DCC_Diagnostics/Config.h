@@ -30,7 +30,7 @@
 //          Arduino Nano (Timer1/pin D8)
 //          Arduino Mega (Timer4/pin D49)
 // If we don't use this, then the selected input pin must support change interrupt 
-// (defaults to pin D2 on Uno, Nano and Mega, GPIO5 on ESP8266/ESP32.
+// (defaults to pin D2 on Uno, Nano and Mega, GPIO2 on ESP8266 and GPIO5 on ESP32.
 #define USETIMER 
 
 // Input pin definitions.  Defaults:
@@ -39,14 +39,14 @@
 //    Mega (USETIMER):               49
 //    Nano/Uno/Mega, Non-USETIMER:   2
 //    ESP32:                         5
-//    ESP8266:                       5
+//    ESP8266:                       2
 //    Other:                         2
 #if defined(USETIMER)
   #if defined(ARDUINO_UNO_NANO)
     #define INPUTPIN 8
   #elif defined(ARDUINO_MEGA)
     #define INPUTPIN 49
-  #elif defined(ESP32) || defined(ESP8266)
+  #elif defined(ESP32)
     #define INPUTPIN 5
   #else
     // Assume timer not supported, use default pin
@@ -54,7 +54,7 @@
     #define INPUTPIN 2
   #endif
 #else
-  #if defined(ESP32) || defined(ESP8266)
+  #if defined(ESP32) 
     #define INPUTPIN 5
   #else
     #define INPUTPIN 2
