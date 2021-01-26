@@ -1,5 +1,6 @@
 ///////////////////////////////////////////////////////
 //
+// Regroup functions into separate classes: NMcK Jan 2021
 // Move configuration items to config.h: NMcK Jan 2021
 // Add OLED, and web server support on ESP32: NMcK Jan 2021
 // Add capture for ESP32; refactor timers: NMcK Jan 2021
@@ -28,18 +29,16 @@
 // Also tried on ESP8266 (NodeMCU) and ESP32 (Heltek Kit 32) but not extensively tested.
 // It does run, and will decode bits on the input pin which is GPIO5, labelled D1 on the NodeMCU.
 // The faster clock speeds on the ESP8266/ESP32 mean that interrupt jitter is less, but there is 
-// still around +/- 4us evident on the ESP8266.  Also, the ESP8266 and ESP32 micros() do
-// actually give a resolution of 1 microsecond (as opposed to 4us on the Arduino).  These
-// architectures require some inspired way of eliminating the effects of other interrupts; for
-// example on the ESP32, there is the option of using the other CPU perhaps.
+// still around +/- 4us evident on the ESP8266.  Also, the ESP8266 and ESP32, micros() does
+// actually give a resolution of 1 microsecond (as opposed to 4us on the Arduino).
 //
-// The use of ICPn on the Arduino enables accurate timing to within 1us.  The millis() function in the 
-// Arduino is no better than 10.5us or so accurate (6.5us interrupt jitter caused by the
+// The use of ICPn on the Arduino and ESP32 enables accurate timing to within 1us.  The millis() 
+// function in the Arduino is no better than 10.5us or so accurate (6.5us interrupt jitter caused by the
 // Arduino Timer0 interrupts, and 4us timer resolution) which is inadequate for diagnostic purposes.
 //
 // The selected digital input must have interrupt support, either via
 // the level change interrupt (e.g. Arduino pin 2 or 3) or, preferably, input capture interrupt
-// (e.g. pin 8 on Arduino Uno, pin 49 on Mega).  The ESP8266/ESP32 do not have input capture functionality
+// (e.g. pin 8 on Arduino Uno, pin 49 on Mega).  The ESP8266 does not have input capture functionality
 // but any pin may be used for level change interrupt.
 //
 // The bit decoding is done by measuring the time between successive
@@ -87,6 +86,7 @@
 // ? = help (show this information)
 //
 ////////////////////////////////////////////////////////
+#include <Arduino.h>
 
 // Configurable parameter items now in separate include file.
 #include "Config.h"
@@ -106,8 +106,8 @@
   #include "EventTimer_default.h"
 #endif
 
-// On ESP32, add web server
-#if defined(ESP32) || defined(ESP8266)
+// Add web server if required.
+#if defined(USE_HTTPSERVER)
 #include "HttpManager.h"
 #endif
 
@@ -116,14 +116,10 @@
 #include "OledDisplay.h"
 #endif
 
-// Statistics structures
-#include "DccStats.h"
+#include "StringBuilder.h"
 
-#if defined(ESP32) || defined(ESP8266) 
-#define INTERRUPT_SAFE IRAM_ATTR
-#else
-#define INTERRUPT_SAFE
-#endif
+// Statistics structures and functions.
+#include "DccStatistics.h"
 
 const int nPackets=8; // Number of packet buffers
 const int pktLength=8; // Max length+1 in bytes of DCC packet
@@ -133,12 +129,8 @@ volatile byte dccPacket[nPackets][pktLength]; // buffer to hold packets
 volatile byte packetsPending=0; // Count of unprocessed packets
 volatile byte activePacket=0;  // indicate which buffer is currently being filled
 volatile bool filterInput = true; // conditions input to remove transient changes
-volatile struct stats activeStats;
-volatile bool enableStats = true;
-
 
 // Variables used by main loop
-byte refreshTime = 4; // Time between DCC packets buffer refreshes in secs
 byte packetHashListSize = 32; // DCC packets checksum buffer size
 bool showLoc=true;
 bool showAcc=true;
@@ -149,21 +141,23 @@ bool showCpuStats=false;
 
 byte inputPacket=0; // Index of next packet to be analysed in dccPacket array
 byte pktByteCount=0;
-int bufferCounter=0;
-struct stats lastStats; // Snapshot of activeStats.
-unsigned long maxSpareLoopCountPerSec = 0; // baseline for CPU load calculation
+int packetHashListCounter=0;
 unsigned int packetHashList[64];
 bool calibrated = false;
 unsigned long lastRefresh = 0;
+unsigned int inactivityCount = 0;
 
-// Buffer for HTTP and OLED output.
-#if defined(ESP32)
-char espBuffer[1024] = "";
-char pktBuffer[512] = "";
+// Buffers for decoded packets, used by HTTP and OLED output.
+#if defined(USE_HTTPSERVER) || defined(USE_OLED)
+char packetBuffer[5000] = "";
 #else
-char espBuffer[1] = "";
-char pktBuffer[1] = "";
+char packetBuffer[1] = "";
 #endif
+StringBuilder sbPacketDecode(packetBuffer, sizeof(packetBuffer));
+
+// Pre-declare capture function
+bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks);
+
 
 //=======================================================================
 // Perform the setup functions for the application.
@@ -190,25 +184,29 @@ void setup() {
   // External resistor is preferred as it can be lower, so 
   // improve the switching speed of the Optocoupler.
   pinMode(INPUTPIN, INPUT_PULLUP);
+  Serial.print("INPUTPIN=");
+  Serial.println(INPUTPIN);
 
   if (!EventTimer.inputCaptureMode()) {
     // Output health warning...
     Serial.println(F("\r\n** WARNING Measurements will occasionally be out up to ~10us either way **"));
-    Serial.println(F("**         because of difficulties with accurate timing in this mode.   **"));
+    Serial.println(F(    "**         because of inaccuracies in the micros() function.            **"));
   }
 
+  // Start OLED display (if required).
   #if defined(USE_OLED)
   OledDisplay.begin(SDA_OLED, SCL_OLED);
-  OledDisplay.update("Initialising..");
+  OledDisplay.append("Initialising..");
   #endif
   
-  #if defined(ESP32) || defined(ESP8266)
-  HttpManager.begin(ssid, password, dnsName);
-  HttpManager.setBuffer(&espBuffer[0]);
+  // Start WiFi and HTTP server (if required).
+  #if defined(USE_HTTPSERVER)
+  HttpManager.begin(WIFI_SSID, WIFI_PASSWORD, DNSNAME);
   #endif
 
-  // Delay first output of statistics 
+  // Set time for first output of statistics during calibration
   lastRefresh = millis();
+  DCCStatistics.setRefreshTime(1);  // Finish calibrating after 1 second
 
   Serial.print(F("Calibrating... "));
 }
@@ -217,66 +215,100 @@ void setup() {
 // Main program loop.  
   
 void loop() {
-  static unsigned int innerSpareLoopCount = 0;
   bool somethingDone = false;
   
-  if (millis() >= lastRefresh + (unsigned long)refreshTime * 1000) {
+  if (!calibrated && millis() >= lastRefresh + 1000) {
     
-    if (!calibrated) {
-      // Calibration cycle done, record the details.
-      Serial.println(F("done."));
-      Serial.print(F("Updates every "));
-      Serial.print(refreshTime);
-      Serial.println(F(" seconds"));
-      Serial.println(F("---"));
-      maxSpareLoopCountPerSec = activeStats.spareLoopCount / refreshTime;
-      calibrated = true;
-      
-      // Start recording data from DCC.
-      ClearDccData();
-      if (!EventTimer.begin(INPUTPIN, capture)) {
-        Serial.println(F("Unable to start EventTimer, check configured pin"));
-        while(1) ;
-      }
-    } else {
-      // Normal cycle, copy. reset, and output diagnostics.
-      if (showHeartBeat) Serial.println('-');
-      ClearDccData();
-      OutputStatistics(Serial);   
+    // Calibration cycle done, record the details.
+    Serial.println(F("done."));
+    calibrated = true;
+    
+    // Read (and discard) stats, then clear them.
+    DCCStatistics.getAndClearStats();
+    clearHashList();
+    
+    // Start recording data from DCC.
+    if (!EventTimer.begin(INPUTPIN, capture)) {
+      Serial.println(F("Unable to start EventTimer, check configured pin"));
+      while(1) ;
+    }
 
-      #if defined(ESP_PLATFORM) || defined(USE_OLED)
-      WriteStatistics(espBuffer, sizeof(espBuffer));
-      #endif
-      #if defined(USE_OLED)
-      OledDisplay.update(&espBuffer[0]);
-      #endif
-    } 
-   
+    DCCStatistics.setRefreshTime(4);
+    Serial.print(F("Updates every "));
+    Serial.print(DCCStatistics.getRefreshTime());
+    Serial.println(F(" seconds"));
+    Serial.println(F("---"));
+    
+    lastRefresh = millis();
+
+  } else if (millis() >= lastRefresh + (unsigned long)DCCStatistics.getRefreshTime() * 1000) {
+
+    // Normal cycle. Copy, reset, and output diagnostics.
+    if (showHeartBeat) Serial.println('-');
+
+    // Snapshot and clear statistics
+    Statistics stats = DCCStatistics.getAndClearStats();
+    clearHashList();
+    
+    // Print DCC Statistics to the serial USB output.
+    if (showDiagnostics) {
+      DCCStatistics.writeFullStatistics(stats, showCpuStats, showBitLengths);   
+      Serial.println("--");
+    }
+
+    // Output short version of DCC statistics to a buffer
+    // for use by OLED
+    #if defined(USE_OLED)
+    OledDisplay.writeShortStatistics(stats);
+    OledDisplay.append(sbPacketDecode.getString());  // Append decoded packets
+    // Update OLED
+    OledDisplay.refresh();
+    #endif
+
+    // Output full stats for HTTPServer to use
+    #if defined(USE_HTTPSERVER)
+    HttpManager.setBuffer(sbPacketDecode.getString());
+    HttpManager.writeHtmlStatistics(stats, false, true);
+    #endif
+
+    sbPacketDecode.reset();  // Empty decoded packet list.
+ 
+    #if defined(ESP32) 
+    // Check if time to go to sleep
+    inactivityCount += DCCStatistics.getRefreshTime();
+    if (inactivityCount > 120) {
+      // Go to sleep after 2 minutes of inactivity.
+      esp_deep_sleep_start();
+    }
+    #endif
+
     lastRefresh = millis();
     somethingDone = true;
   }
 
   // Check for DCC packets - if found, analyse and display them
-  somethingDone |= processDCC(Serial);
+  if (processDCC(Serial)) {
+    somethingDone = true;
+    inactivityCount = 0;
+  }
 
   // Check for commands received over the USB serial connection.
-  somethingDone |= processCommands();
+  if (processCommands()) {
+    somethingDone = true;
+    inactivityCount = 0;
+  }
     
   #if defined(USE_OLED)
   OledDisplay.checkButton();
   #endif
 
-//Increment CPU loop counter.  This is done if nothing else was.
+  //Increment CPU loop counter.  This is done if nothing else was.
   // If the counter never gets incremented, it means that the 
   // CPU is fully loaded doing other things and has no spare time.
-  if (!somethingDone) {
-    if (++innerSpareLoopCount >= F_CPU/1000000L) {
-      activeStats.spareLoopCount++; 
-      innerSpareLoopCount = 0;
-    }
-  }
+  if (!somethingDone) 
+    DCCStatistics.updateLoopCount();
 
-  #if defined(ESP32) || defined(ESP8266)
+  #if defined(USE_HTTPSERVER)
   HttpManager.process();
   #endif
   
@@ -322,7 +354,7 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
     // the gap between interrupts is realistic.
     if (interruptCount > 0 && (diginState == previousDiginState || interruptInterval <= 3)) {
       // No change in digital, or it was fleeting.  Ignore.
-      activeStats.glitchCount++;
+      DCCStatistics.recordGlitch();
       return false;   // reject interrupt
     }
   }
@@ -332,8 +364,15 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
   // Calculate difference between current bit half and preceding one, rounding up to next microsecond.
   // This will only be recorded on alternate half-bits, i.e. where the previous and current half-bit
   // make a complete bit.
-  unsigned int delta = (abs((int)halfBitLengthTicks - (int)previousHalfBitLengthTicks) 
-      + TICKSPERMICROSEC - 1) / TICKSPERMICROSEC;
+  long deltaTicks = halfBitLengthTicks - previousHalfBitLengthTicks;
+  if (deltaTicks < 0) deltaTicks = -deltaTicks;
+  unsigned int delta = (deltaTicks + TICKSPERMICROSEC - 1) / TICKSPERMICROSEC;
+
+  // Check length of half-bit
+  if (interruptInterval < 80) 
+    bitValue = 1;
+  else
+    bitValue = 0;
 
   // Record input state and timer values ready for next interrupt
   previousDiginState = diginState;
@@ -342,18 +381,13 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
   // If first or second interrupt, then exit as the previous state is incomplete.
   if (interruptCount < 2) {
     interruptCount++;
+    previousBitValue = bitValue;
     return true;
   }
 
   #ifdef LEDPIN_ACTIVE
   digitalWrite(LEDPIN_ACTIVE, 1);
   #endif
-
-  // Check length of half-bit
-  if (halfBitLengthTicks < 80 * TICKSPERMICROSEC) 
-    bitValue = 1;
-  else
-    bitValue = 0;
 
   // Check if we're on the first or second half of the bit.
   if (bitValue != previousBitValue) {
@@ -364,29 +398,9 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
     altbit = !altbit;
   }
   previousBitValue = bitValue;
-  
+
   // Update statistics
-  activeStats.count++;
-  if (bitValue == 0) {
-    activeStats.count0++;
-    if (interruptInterval > activeStats.max0) activeStats.max0 = interruptInterval;
-    if (interruptInterval < activeStats.min0) activeStats.min0 = interruptInterval;
-    activeStats.total0 += interruptInterval;
-    if (altbit && (delta > activeStats.max0BitDelta))
-      activeStats.max0BitDelta = delta;
-  } else {
-    activeStats.count1++; 
-    if (interruptInterval > activeStats.max1) activeStats.max1 = interruptInterval;
-    if (interruptInterval < activeStats.min1) activeStats.min1 = interruptInterval;
-    activeStats.total1 += interruptInterval;
-    if (altbit & (delta > activeStats.max1BitDelta))
-      activeStats.max1BitDelta = delta;
-  }
-  if (interruptInterval < minBitLength) 
-    interruptInterval = minBitLength;
-  else if (interruptInterval > maxBitLength) 
-    interruptInterval = maxBitLength;
-  activeStats.countByLength[altbit][interruptInterval - minBitLength]++;
+  DCCStatistics.recordHalfBit(altbit, bitValue, interruptInterval, delta);
 
   // Store interrupt interval for use on next interrupt.
   previousHalfBitLengthTicks = halfBitLengthTicks;
@@ -423,7 +437,7 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
         preambleOneCount = 0;
 
         // Record this event in a counter.
-        activeStats.countLostPackets++;
+        DCCStatistics.recordLostPacket();
 
       } else {
         // Preamble read, packet buffer available, so message bit can be stored!
@@ -435,7 +449,7 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
             dccPacket[activePacket][0] = inputByteNumber; // save number of bytes
             packetsPending++; // flag that packet is ready for processing
             if (++activePacket >= nPackets) activePacket = 0;  // move to next packet buffer
-            activeStats.packetCount++;
+            DCCStatistics.recordPacket();
             preambleFound = false; // scan for another preamble
             preambleOneCount = 1;  // allow the current bit to be counted in the preamble.
           }
@@ -451,7 +465,7 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
               preambleFound = false;  // scan for another preamble
               preambleOneCount = 0; 
               // Record this event in a counter.
-              activeStats.countLongPackets++;
+              DCCStatistics.recordLongPacket();
             }             
             newByte = 0;
           }
@@ -477,9 +491,7 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
   //interruptDuration += 7;
   
   // Record result
-  if (interruptDuration > activeStats.maxInterruptTime) activeStats.maxInterruptTime = interruptDuration;
-  if (interruptDuration < activeStats.minInterruptTime) activeStats.minInterruptTime = interruptDuration;
-  activeStats.totalInterruptTime += interruptDuration;
+  DCCStatistics.recordInterruptHandlerTime(interruptDuration);
 
   return true; // Accept interrupt.
 }
@@ -492,144 +504,33 @@ void beginBitDetection() {
   EventTimer.begin(INPUTPIN, capture);
 }
 
-//=======================================================================
-// PrintByte prints one byte of data in hex with leading zero
-// when necessary.
-
-void printByte(byte x) {
-  byte mask = 0x80;
-  while(mask != 0) {
-    if ((x & mask) != 0) 
-      Serial.print('1');
-    else
-      Serial.print('0');  
-    mask >>= 1;
-  }
-}
 
 //=======================================================================
-// PrintPacket prints the raw DCC packet contents to the 
-// USB serial connection.
+// PrintPacketBits prints the raw DCC packet contents to the 
+// nominated Print stream (e.g. Serial).
 
-void printPacket(int index) {
-  Serial.print(' ');
-  for (byte n=1; n<dccPacket[index][0]; n++) {
-    Serial.print(' ');
-    printByte(dccPacket[index][n]);
-  }
-  Serial.println(' ');
-}
-
-//=======================================================================
-// OutputStatistics writes the last set of statistics to the serial stream
-
-void OutputStatistics(Print &output) {
-
-  if (showDiagnostics) {
-    
-    // These counts are for half-bits, so divide by two.
-    output.print(F("Bit Count/"));
-    output.print(refreshTime);
-    output.print(F(" sec="));
-    output.print(lastStats.count/2);
-    output.print(F(" (Zeros="));
-    output.print(lastStats.count0/2);
-    output.print(F(", Ones="));
-    output.print(lastStats.count1/2);
-    output.print(F("), Glitches="));
-    output.println(lastStats.glitchCount);
-
-    output.print(F("Packets received="));
-    output.print(lastStats.packetCount);
-    output.print(F(", Checksum Error="));
-    output.print(lastStats.checksumError);
-    output.print(F(", Lost pkts="));
-    output.print(lastStats.countLostPackets);
-    output.print(F(", Long pkts="));
-    output.println(lastStats.countLongPackets);
-
-    output.print(F("0 half-bit length (us): "));
-    if (lastStats.min0 <= lastStats.max0) {
-      output.print((float)lastStats.total0/lastStats.count0,1);
-      output.print(F(" ("));
-      output.print(lastStats.min0);
-      output.print(F("-"));
-      output.print(lastStats.max0);
-      output.print(F(")"));
-      output.print(F(" delta <= "));
-      output.print(lastStats.max0BitDelta);
-    } else
-      output.print(F("<none>"));
-    output.println();
-    output.print(F("1 half-bit length (us): "));
-    if (lastStats.min1 <= lastStats.max1) {
-      output.print((float)lastStats.total1/lastStats.count1,1);
-      output.print(F(" ("));
-      output.print(lastStats.min1);
-      output.print(F("-"));
-      output.print(lastStats.max1);
-      output.print(F(")"));
-      output.print(F(" delta <= "));
-      output.print(lastStats.max1BitDelta);
-    } else
-      output.print(F("<none>"));
-    output.println();
-
-    if (showCpuStats) {
-      output.print(F("IRC Duration (us): "));
-      if (lastStats.minInterruptTime <= lastStats.maxInterruptTime) {
-        output.print((float)lastStats.totalInterruptTime/lastStats.count,1);
-        output.print(F(" ("));
-        output.print(lastStats.minInterruptTime);
-        output.print(F("-"));
-        output.print(lastStats.maxInterruptTime);
-        output.print(F(")"));
-      } else 
-        output.print(F("<none>"));
-        
-      // Calculate and display cpu load
-      unsigned long spareLoopCountPerSec = lastStats.spareLoopCount / refreshTime;
-      output.print(F(",  CPU load: "));
-      output.print(100.0f * (1.0f - (float)spareLoopCountPerSec / maxSpareLoopCountPerSec), 1);
-      output.print(F("%"));
-      output.println();
+void printPacketBits(Print &output, int index) {
+  output.print(' ');
+  for (byte i=1; i<dccPacket[index][0]; i++) {
+    output.print(' ');
+    byte b = dccPacket[index][i];
+    for (int bit=0; bit<8; bit++) {
+      output.print(b & 0x80 ? '1' : '0');
+      b <<= 1;
     }
   }
-  
-  if (showBitLengths) {
-    output.println(F("------ Half-bit count by length (us) -------"));
-    for (int i=minBitLength; i<=maxBitLength; i++) {
-      unsigned long c0 = lastStats.countByLength[0][i-minBitLength];
-      unsigned long c1 = lastStats.countByLength[1][i-minBitLength];        
-      if (c0 > 0 || c1 > 0) {
-        if (i == minBitLength) output.print(F("<="));
-        else if (i == maxBitLength) output.print(F(">="));
-        output.print(i);
-        output.print('\t');
-        output.print(c0);
-        output.print('\t');
-        output.println(c1);
-      }
-    }
-  }
-  output.println(F("--------------------------------------------"));
 }
 
-//=======================================================================
-// ClearDCCData clears the contents of the packetHashList array.
-// This array normally contains the checksums of received DCC packets, 
-// and is used to suppress the decoding of repeated packets.
 
-void ClearDccData() {
+//=======================================================================
+// ClearDCCData clears the contents of the packetHashList array and resets
+// the statistics.  
+// The packetHashList array normally contains the checksums of received 
+// DCC packets, and is used to suppress the decoding of repeated packets.
+
+void clearHashList() {
   for (byte n=0; n<packetHashListSize; n++) packetHashList[n]=0;
-  bufferCounter=0;
-
-  // Copy and reset active stats.  Disabling interrupts would improve
-  // consistency a bit but causes bits to be lost (CRC errors recorded).
-  // Using memcpy and memset minimises the time at risk of inconsistency.
-  memcpy(&lastStats, (void *)&activeStats, sizeof(struct stats));
-  memset((void *)&activeStats, 0, sizeof(struct stats));
-  activeStats.minInterruptTime = activeStats.min0 = activeStats.min1 = 65535;
+  packetHashListCounter=0;
 }
 
 //=======================================================================
@@ -640,8 +541,7 @@ void UpdateLED() {
   
   #ifdef LEDPIN_FAULT
   static bool ledLit = false;
-  if (activeStats.glitchCount > 0 || activeStats.checksumError > 0 || 
-      activeStats.countLongPackets > 0 || activeStats.countLostPackets > 0) {
+  if (DCCStatistics.faultPresent()) {
     if (!ledLit) {
       digitalWrite(LEDPIN_FAULT, 1);
       ledLit = true;
@@ -675,7 +575,7 @@ bool processDCC(Print &output) {
     for (byte n = 1; n <= pktByteCount; n++) 
       checksum ^= dccPacket[inputPacket][n];
     if (checksum) {  // Result should be zero, if not it's an error!
-      activeStats.checksumError++;
+      DCCStatistics.recordChecksumError();
     } else { 
       // There is a new packet with a correct checksum
       #ifdef LEDPIN_DECODING
@@ -695,8 +595,8 @@ bool processDCC(Print &output) {
       }
   
       if (isDifferentPacket) {
-        packetHashList[bufferCounter++] = hash; // add new packet's hash to the list
-        if (bufferCounter >= packetHashListSize) bufferCounter = 0;
+        packetHashList[packetHashListCounter++] = hash; // add new packet's hash to the list
+        if (packetHashListCounter >= packetHashListSize) packetHashListCounter = 0;
         
         DecodePacket(output, inputPacket, isDifferentPacket);
       }
@@ -720,11 +620,7 @@ bool processDCC(Print &output) {
   return true;
 }
 
-void put(char buffer[], int len, int &pos, const char *str) {
-  strncpy(&buffer[pos], str, len);
-  pos += len;
-}
-    
+
 //=======================================================================
 // Read data from the dccPacket structure and decode into 
 // textual representation.  Send results out over the USB serial
@@ -735,20 +631,21 @@ void DecodePacket(Print &output, int inputPacket, bool isDifferentPacket) {
   byte decoderType; //0=Loc, 1=Acc
   unsigned int decoderAddress;
   byte speed;
-  char buffer[35];
-  char val1Buf[15], val2buf[15];
-  val1Buf[0] = val2buf[0] = '\0';
+
+  char tempBuffer[100];
+  StringBuilder sbTemp(tempBuffer, sizeof(tempBuffer));
 
   // First determine the decoder type and address.
   if (dccPacket[inputPacket][1]==B11111111) { //Idle packet
     if (isDifferentPacket)
-      snprintf(buffer, sizeof(buffer), "Idle ");
+      sbTemp.print(F("Idle "));
     decoderType = 255;
   } else if (!bitRead(dccPacket[inputPacket][1],7)) { //bit7=0 -> Loc Decoder Short Address
     decoderAddress = dccPacket[inputPacket][1];
     instrByte1 = dccPacket[inputPacket][2];
     decoderType = 0;
-  }  else {
+  }
+  else {
     if (bitRead(dccPacket[inputPacket][1],6)) { //bit7=1 AND bit6=1 -> Loc Decoder Long Address
       decoderAddress = 256 * (dccPacket[inputPacket][1] & B00111111) + dccPacket[inputPacket][2];
       instrByte1 = dccPacket[inputPacket][3];
@@ -767,194 +664,203 @@ void DecodePacket(Print &output, int inputPacket, bool isDifferentPacket) {
       if (instrByte1 & B10000000) { // Basic Accessory
         decoderAddress = (((~instrByte1) & B01110000) << 2) + decoderAddress;
         byte port = (instrByte1&B00000110)>>1;
-        snprintf(buffer, sizeof(buffer), "Acc %d %d:%d %d %s",
-          (decoderAddress-1)*4 + port + 1,
-          decoderAddress,
-          port,
-          bitRead(instrByte1, 3),
-          bitRead(instrByte1, 0) ? " On" : "Off");
+        sbTemp.print(F("Acc "));
+        sbTemp.print((decoderAddress-1)*4 + port + 1);
+        sbTemp.print(' ');
+        sbTemp.print(decoderAddress);
+        sbTemp.print(F(":"));
+        sbTemp.print(port);
+        sbTemp.print(' ');
+        sbTemp.print(bitRead(instrByte1,3));
+        if (bitRead(instrByte1,0)) 
+          sbTemp.print(F(" On"));
+        else 
+          sbTemp.print(F(" Off"));
       } else { // Accessory Extended NMRA spec is not clear about address and instruction format !!!
-        itoa(dccPacket[inputPacket][3], val1Buf, 2); 
-        snprintf(buffer, sizeof(buffer), "Acc Ext %d Asp %s",
-          (decoderAddress << 5) + ((instrByte1 & B01110000) >> 2) + ((instrByte1 & B00000110) >> 1),
-          val1Buf);
+        sbTemp.print(F("Acc Ext "));
+        decoderAddress = (decoderAddress << 5) + ((instrByte1 & B01110000) >> 2) + ((instrByte1 & B00000110) >> 1);
+        sbTemp.print(decoderAddress);
+        sbTemp.print(F(" Asp "));
+        sbTemp.print(dccPacket[inputPacket][3],BIN);
       }
     }
   }
   else if (decoderType == 0)  { // Loco / Multi Function Decoder
     if (showLoc && isDifferentPacket) {
-      const char *op = "";
-      byte value;
+      sbTemp.print(F("Loc "));
+      sbTemp.print(decoderAddress);
       byte instructionType = instrByte1 >> 5;
       switch (instructionType) {
+
         case 0:
-          snprintf(buffer, sizeof(buffer), "Loc%d Control", decoderAddress);
-          break;
+          sbTemp.print(F(" Control"));
+        break;
 
         case 1: // Advanced Operations
           if (instrByte1==B00111111) { //128 speed steps
             if (bitRead(dccPacket[inputPacket][pktByteCount-1], 7)) 
-              op = "Fw128";
+              sbTemp.print(F(" Fwd128 "));
             else 
-              op = "Rv128";
+              sbTemp.print(F(" Rev128 "));
             byte speed = dccPacket[inputPacket][pktByteCount-1] & B01111111;
             if (!speed) 
-              op = "Stop";
+              sbTemp.print(F("Stop"));
             else if (speed==1) 
-              op = "Estop";
+              sbTemp.print(F("Estop"));
             else 
-              itoa(speed-1, val1Buf, 10);
+              sbTemp.print(speed-1);
           } else if (instrByte1==B00111110) { //Speed Restriction
             if (bitRead(dccPacket[inputPacket][pktByteCount-1], 7)) 
-              op = "On";
+              sbTemp.print(F(" On "));
             else 
-              op = "Off";
-            itoa(dccPacket[inputPacket][pktByteCount-1] & B01111111, val1Buf, 10);;
+              sbTemp.print(F(" Off "));
+            sbTemp.print(dccPacket[inputPacket][pktByteCount-1] & B01111111);
           }
-          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
-            decoderAddress, op, val1Buf);
-
-          break;
+        break;
 
         case 2: // Reverse speed step
           speed = ((instrByte1 & B00001111) << 1) - 3 + bitRead(instrByte1,4);
           if (speed==253 || speed==254) 
-            op = "Stop";
+            sbTemp.print(F(" Stop"));
           else if (speed==255 || speed==0) 
-            op = "EStop";
+            sbTemp.print(F(" EStop"));
           else {
-            op = "Rev";
-            itoa(speed, val1Buf, 10);
+            sbTemp.print(F(" Rev "));
+            sbTemp.print(speed);
           }
-          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
-            decoderAddress, op, val1Buf);
-          break;
+        break;
 
         case 3: // Forward speed step
           speed = ((instrByte1 & B00001111) << 1) - 3 + bitRead(instrByte1,4);
           if (speed==253 || speed==254) 
-            op = "Stop";
+            sbTemp.print(F(" Stop"));
           else if (speed==255 || speed==0) 
-            op = "EStop";
+            sbTemp.print(F(" EStop"));
           else {
-            op = "Forw";
-            itoa(speed, val1Buf, 10);
+            sbTemp.print(F(" Forw "));
+            sbTemp.print(speed);
           }
-          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
-            decoderAddress, op, val1Buf);
-          break;
+        break;
 
         case 4: // Loc Function L-4-3-2-1
-          op = "L F4-F1";
-          itoa(instrByte1 & B00011111, val1Buf, 2); // 5 bit binary
-          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
-            decoderAddress, op, val1Buf);
-          break;
+          sbTemp.print(F(" L F4-F1 "));
+          sbTemp.print(instrByte1 & B00011111, BIN);
+        break;
 
         case 5: // Loc Function 8-7-6-5
           if (bitRead(instrByte1,4)) {
-            op = "F8-F5";
-            itoa(instrByte1 & B00001111, val1Buf, 2); // 4 bit binary
+            sbTemp.print(F(" F8-F5 "));
+            sbTemp.print(instrByte1 & B00001111, BIN);
           }
           else { // Loc Function 12-11-10-9
-            op = "F12-F9";
-            itoa(instrByte1 & B00001111, val1Buf, 2); // 4 bit binary
+            sbTemp.print(F(" F12-F9 "));
+            sbTemp.print(instrByte1 & B00001111, BIN);
           }
-          snprintf(buffer, sizeof(buffer), "Loc%d %s %s",
-            decoderAddress, op, val1Buf);
-          break;
+        break;
+
+        default: 
+          sbTemp.print(F(" Unknown"));
+        break;
 
         case 6: // Future Expansions
-          switch (instrByte1 & B00011111) {
+          switch (instrByte1&B00011111) {
             case 0: // Binary State Control Instruction long form
-              op = "BinLong";
-              itoa(256 * dccPacket[inputPacket][pktByteCount-1] + (dccPacket[inputPacket][pktByteCount-2] & B01111111),
-                val1Buf, 10);
-              if bitRead(dccPacket[inputPacket][pktByteCount-2], 7) strcpy(val2buf, "On");
-              else strcpy(val2buf, "Off");
-              break;
+              sbTemp.print(F(" BinSLong "));
+              sbTemp.print(256 * dccPacket[inputPacket][pktByteCount-1] + (dccPacket[inputPacket][pktByteCount-2] & B01111111));
+              if bitRead(dccPacket[inputPacket][pktByteCount-2], 7) sbTemp.print(F(" On"));
+              else sbTemp.print(F(" Off"));
+            break;
             case B00011101: // Binary State Control
-              op = "BinShort";
-              itoa(dccPacket[inputPacket][pktByteCount-1] & B01111111, val1Buf, 10);
-              if bitRead(dccPacket[inputPacket][pktByteCount-1], 7) strcpy(val2buf, "On");
-              else strcpy(val2buf, "Off");
-              break;
+              sbTemp.print(F(" BinShort "));
+              sbTemp.print(dccPacket[inputPacket][pktByteCount-1] & B01111111);
+              if bitRead(dccPacket[inputPacket][pktByteCount-1], 7) sbTemp.print(F(" On"));
+              else sbTemp.print(F(" Off"));
+            break;
             case B00011110: // F13-F20 Function Control
-              op = "F20-F13";
-              itoa(dccPacket[inputPacket][pktByteCount-1], val1Buf, 2); // 8 bit binary
-              break;
+              sbTemp.print(F(" F20-F13 "));
+              sbTemp.print(dccPacket[inputPacket][pktByteCount-1], BIN);
+            break;
             case B00011111: // F21-F28 Function Control
-              op = "F28-F21";
-              itoa(dccPacket[inputPacket][pktByteCount-1], val1Buf, 2); // 8 bit binary
-              break;
+              sbTemp.print(F(" F28-F21 "));
+              sbTemp.print(dccPacket[inputPacket][pktByteCount-1], BIN);
+            break;
             default:
-              op = "unknown";
-              break;
+              sbTemp.print(F(" Unknown"));
+            break;
           }
-          snprintf(buffer, sizeof(buffer), "Loc%d %s %s %s",
-            decoderAddress, op, val1Buf, val2buf);
-          break;
+        break;
 
         case 7:
-          value = dccPacket[inputPacket][pktByteCount-1];
+          sbTemp.print(F(" CV "));
+          byte value = dccPacket[inputPacket][pktByteCount-1];
           if (instrByte1&B00010000) { // CV Short Form
             byte cvType=instrByte1 & B00001111;
             switch (cvType) {
               case B00000010:
-                strcpy(val1Buf, "23");
-                break;
+                sbTemp.print(F("23 "));
+                sbTemp.print(value);
+              break;
               case B00000011:
-                strcpy(val1Buf, "24");
-                break;
+                sbTemp.print(F("24 "));
+                sbTemp.print(value);
+              break;
               case B00001001:
-                strcpy(val1Buf, "Lock");
-                break;
+                sbTemp.print(F("Lock "));
+                sbTemp.print(value);
+              break;
               default:
-                strcpy(val1Buf, "Unknown");
-                break;
+                sbTemp.print(F("Unknown"));
+                sbTemp.print(' ');
+                sbTemp.print(value);
+              break;
             }
-            snprintf(buffer, sizeof(buffer), "Loc%d CV %s %d",
-              decoderAddress, val1Buf, value);
           }
           else { // CV Long Form
             int cvAddress = 256 * (instrByte1 & B00000011) + dccPacket[inputPacket][pktByteCount-2] + 1;
+            sbTemp.print(cvAddress);
+            sbTemp.print(' ');
             switch (instrByte1 & B00001100) {
               case B00000100: // Verify Byte
-                strcpy(val1Buf, "Vrfy");
-                itoa(value, val2buf, 10);
-                break;
+                sbTemp.print(F("Verify "));
+                sbTemp.print(value);
+              break;
               case B00001100: // Write Byte
-                strcpy(val1Buf, "Write");
-                itoa(value, val2buf, 10);
-                break;
+                sbTemp.print(F("Write "));
+                sbTemp.print(value);
+              break;
               case B00001000: // Bit Write
-                if (value & B00010000) strcpy(val1Buf, "BitVfy");
-                else strcpy(val1Buf, "BitWrt");
-                //*****************
-                output.print(value & B00000111);
-                output.print(' ');
-                output.print((value & B00001000)>>3);
-                //*************
-                break;
+                sbTemp.print(F("Bit "));
+                if (value & B00010000) sbTemp.print(F("Vrfy "));
+                else sbTemp.print(F("Wrt "));
+                sbTemp.print(value & B00000111);
+                sbTemp.print(' ');
+                sbTemp.print((value & B00001000)>>3);
+              break;
               default:
-                strcpy(val1Buf, "unknown");
-                break;
+                sbTemp.print(F("Unknown"));
+              break;
             }
-            snprintf(buffer, sizeof(buffer), "Loc%d CV%d %s %d",
-              decoderAddress, cvAddress, val1Buf, value);
           }
-          break;
-
-        default: 
-          op = "unknown";
-          break;
-      }
+        break;
+      }      
     }
   }
-  output.print(buffer);
-  printPacket(inputPacket);
-  strncat(pktBuffer, buffer, sizeof(pktBuffer));
-  strncat(pktBuffer, "\n", sizeof(pktBuffer));
+
+  // Append packet bits.
+  sbTemp.setPos(21);
+  sbTemp.print(' ');
+  printPacketBits(sbTemp, inputPacket);
+  sbTemp.end();  // terminate string in buffer.
+
+  // Get reference to buffer containing results.
+  char *decodedPacket = sbTemp.getString();
+
+  // Append decoded packet data to string buffer.
+  sbPacketDecode.println(decodedPacket);
+  sbPacketDecode.end();
+
+  // Also print to USB serial, and dump packet in hex.
+  Serial.println(decodedPacket);
 }
 
 //=======================================================================
@@ -966,23 +872,23 @@ bool processCommands() {
     switch (Serial.read()) {
       case 49: 
         Serial.println(F("Refresh Time = 1s"));
-        refreshTime=1;
+        DCCStatistics.setRefreshTime(1);
       break;
       case 50:
         Serial.println(F("Refresh Time = 2s"));
-        refreshTime=2;
+        DCCStatistics.setRefreshTime(2);
       break;
       case 51:
         Serial.println(F("Refresh Time = 4s"));
-        refreshTime=4;
+        DCCStatistics.setRefreshTime(4);
       break;
       case 52:
         Serial.println(F("Refresh Time = 8s"));
-        refreshTime=8;
+        DCCStatistics.setRefreshTime(8);
       break;
       case 53:
         Serial.println(F("Refresh Time = 16s"));
-        refreshTime=16;
+        DCCStatistics.setRefreshTime(16);
       break;
       case 54:
         Serial.println(F("Buffer Size = 4"));
@@ -1065,7 +971,7 @@ bool processCommands() {
         Serial.print(F(" / ShowAcc "));
         Serial.print(showAcc);
         Serial.print(F(" / RefreshTime "));
-        Serial.print(refreshTime);
+        Serial.print(DCCStatistics.getRefreshTime());
         Serial.print(F(" / BufferSize "));
         Serial.println(packetHashListSize);
         Serial.println();
@@ -1074,52 +980,4 @@ bool processCommands() {
     return true;
   } else
     return false;
-}
-
-
-// Write Statistics summary to a buffer for use by the HTTP Server and 
-// for writing to the OLED display.
-void WriteStatistics(char *buffer, size_t bufferSize) {
-  if (lastStats.count > 0) {
-    snprintf(buffer, bufferSize, 
-      "Bits/%d sec: %lu\n"
-      " 0: %lu 1: %lu\n"
-      "Lengths (us)\n"
-      " 0:%.1f (%u-%u)\n"
-      " 1:%.1f (%u-%u)\n"
-      "Deltas: 0:<%d 1:<%d\n"
-      "Frames: %u\n"
-      "CksumErr: %u\n"
-      "--\n"
-      "%s", 
-      refreshTime,
-      lastStats.count/2, 
-      lastStats.count0/2,
-      lastStats.count1/2,
-      (double)lastStats.total0/lastStats.count0,
-      lastStats.min0,
-      lastStats.max0,
-      (double)lastStats.total1/lastStats.count1,
-      lastStats.min1,
-      lastStats.max1,
-      lastStats.max0BitDelta,
-      lastStats.max1BitDelta,
-      lastStats.packetCount,
-      lastStats.checksumError,
-      pktBuffer);
-  } else {
-    snprintf(buffer, bufferSize,
-      "Bits/%d sec: 0\n"
-      " 0: 0 1: 0\n"
-      "Lengths (us)\n"
-      " 0: N/A\n"
-      " 1: N/A\n"
-      "Deltas: N/A\n"
-      "Frames: 0\n"
-      "CksumErr: 0\n"
-      "--", 
-      refreshTime);
-  }
-  // Reinitialise packet buffer.
-  pktBuffer[0] = '\0';
 }

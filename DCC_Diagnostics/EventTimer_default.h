@@ -18,7 +18,7 @@
 
 // ESP platform must have IRAM_ATTR on any function called from
 //  interrupt handlers, so that they aren't executed from flash.
-#if defined(ESP32) || defined(ESP8266)
+#if defined(ESP32) || defined(ESP8266) || defined(ESP_PLATFORM)
   #define INTERRUPT_SAFE IRAM_ATTR
 #else
   #define INTERRUPT_SAFE
