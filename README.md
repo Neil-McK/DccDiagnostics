@@ -54,8 +54,9 @@ uses its input capture mode which works very well and potentially can support a 
 ## WiFi and Web Browser
 
 On ESP8266 and ESP32, an HTTP server is provided which allows the output to be viewed from
-a standard browser.  The device connects to WiFi using WPS during startup.  Press the WPS button on the router before 
-resetting the device, and it should get its credentials from the router.  From that point onward, it will 
+a standard browser.  The first time the device start, it will attempt to get WiFi credential from the
+router using WPS protocol.   Press the WPS button on the router before 
+resetting the device, and the device should connect to the router.  When reset or started in future, it will 
 connect using the same credentials by preference.
 
 ![Example of output in web browser](WebInterface.PNG "Example of web output")

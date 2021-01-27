@@ -222,6 +222,7 @@ void setup() {
 void loop() {
   bool somethingDone = false;
   
+  // The first bit runs one second after setup, and completes the initialisation.
   if (!calibrated && millis() >= lastRefresh + 1000) {
     
     // Calibration cycle done, record the details.
@@ -247,8 +248,10 @@ void loop() {
     lastRefresh = millis();
 
   } else if (millis() >= lastRefresh + (unsigned long)DCCStatistics.getRefreshTime() * 1000) {
-
-    // Normal cycle. Copy, reset, and output diagnostics.
+    
+    // The next part runs once every 'refresh time' seconds.  It primarily captures, resets and
+    //  outputs the statistics.
+    
     if (showHeartBeat) Serial.println('-');
 
     // Snapshot and clear statistics
@@ -279,7 +282,7 @@ void loop() {
     sbPacketDecode.reset();  // Empty decoded packet list.
  
     #if defined(ESP32) 
-    // Check if time to go to sleep
+    // Check if time to go to sleep on ESP32
     inactivityCount += DCCStatistics.getRefreshTime();
     if (inactivityCount > 120) {
       // Go to sleep after 2 minutes of inactivity.
