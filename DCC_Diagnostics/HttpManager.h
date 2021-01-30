@@ -12,7 +12,7 @@
 #include "Config.h"
 
 #if defined(ESP8266) 
-  #include <ESP8266Wifi.h>
+  #include <ESP8266WiFi.h>
   #include <ESP8266WebServer.h>
   #define WebServer ESP8266WebServer
   #include <ESP8266mDNS.h>

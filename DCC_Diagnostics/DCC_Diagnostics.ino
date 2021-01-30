@@ -88,6 +88,7 @@
 // b = show half-bit counts by length toggle
 // c = show cpu/irc usage in sniffer toggle
 // f = input filter toggle
+// s = set NMRA compliance strictness (0=none,1=decoder,2=controller)
 // ? = help (show this information)
 //
 ////////////////////////////////////////////////////////
@@ -134,6 +135,7 @@ volatile byte dccPacket[nPackets][pktLength]; // buffer to hold packets
 volatile byte packetsPending=0; // Count of unprocessed packets
 volatile byte activePacket=0;  // indicate which buffer is currently being filled
 volatile bool filterInput = true; // conditions input to remove transient changes
+volatile byte strictMode=1;  // rejects frames containing out-of-spec bit lengths
 
 // Variables used by main loop
 byte packetHashListSize = 32; // DCC packets checksum buffer size
@@ -153,8 +155,10 @@ unsigned long lastRefresh = 0;
 unsigned int inactivityCount = 0;
 
 // Buffers for decoded packets, used by HTTP and OLED output.
-#if defined(USE_HTTPSERVER) || defined(USE_OLED)
+#if defined(USE_HTTPSERVER)
 char packetBuffer[5000] = "";
+#elif defined(USE_OLED)
+char packetBuffer[400] = "";
 #else
 char packetBuffer[1] = "";
 #endif
@@ -422,6 +426,38 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
   // If this is the second half-bit then we've got a whole bit!!
   if (altbit) {
 
+    bool rejectBit = false;
+    if (strictMode == 2) {
+      // Validate bit lengths against NMRA spec for controllers
+      if (bitValue == 0) {
+        if (interruptInterval < 95 || interruptInterval > 9900) {
+          rejectBit = true;
+        }
+      } else {
+        if (interruptInterval < 55 || interruptInterval > 61 || delta > 3) {
+          rejectBit = true;
+        }
+      }
+    } else if (strictMode == 1) { 
+      // Validate bit lengths against NMRA spec for decoders.
+      if (bitValue == 0) {
+        if (interruptInterval < 90 || interruptInterval > 10000) {
+          rejectBit = true;
+        }
+      } else {
+        if (interruptInterval < 52 || interruptInterval > 64 || delta > 6) {
+          rejectBit = true;
+        }
+      }
+    }
+    // Record error only if we're in a packet (preamble has been read).
+    if (rejectBit && preambleFound) {
+      DCCStatistics.recordOutOfSpecRejection();
+      // Search for next packet
+      preambleFound = 0;
+      preambleOneCount = 0;
+    }
+
     // Now we've got a bit, process it.  The message comprises the following:
     //   Preamble: 10 or more '1' bits followed by a '0' start bit.
     //   Groups of 9 bits each containing data byte of 8 bits, followed by a 
@@ -463,7 +499,6 @@ bool INTERRUPT_SAFE capture(unsigned long halfBitLengthTicks) {
             dccPacket[activePacket][0] = inputByteNumber; // save number of bytes
             packetsPending++; // flag that packet is ready for processing
             if (++activePacket >= nPackets) activePacket = 0;  // move to next packet buffer
-            DCCStatistics.recordPacket();
             preambleFound = false; // scan for another preamble
             preambleOneCount = 1;  // allow the current bit to be counted in the preamble.
           }
@@ -595,6 +630,9 @@ bool processDCC(Print &output) {
       #ifdef LEDPIN_DECODING
       digitalWrite(LEDPIN_DECODING, 1);
       #endif
+
+      // Hooray - we've got a packet to decode, with no errors!
+      DCCStatistics.recordPacket();
       
       // Generate a cyclic hash based on the packet contents for checking if we've seen a similar packet before.
       isDifferentPacket=true;
@@ -645,14 +683,17 @@ void DecodePacket(Print &output, int inputPacket, bool isDifferentPacket) {
   byte decoderType; //0=Loc, 1=Acc
   unsigned int decoderAddress;
   byte speed;
+  bool outputDecodedData = false;
 
   char tempBuffer[100];
   StringBuilder sbTemp(tempBuffer, sizeof(tempBuffer));
 
   // First determine the decoder type and address.
   if (dccPacket[inputPacket][1]==B11111111) { //Idle packet
-    if (isDifferentPacket)
+    if (isDifferentPacket) {
       sbTemp.print(F("Idle "));
+      outputDecodedData = true;
+    }
     decoderType = 255;
   } else if (!bitRead(dccPacket[inputPacket][1],7)) { //bit7=0 -> Loc Decoder Short Address
     decoderAddress = dccPacket[inputPacket][1];
@@ -697,6 +738,7 @@ void DecodePacket(Print &output, int inputPacket, bool isDifferentPacket) {
         sbTemp.print(F(" Asp "));
         sbTemp.print(dccPacket[inputPacket][3],BIN);
       }
+      outputDecodedData = true;
     }
   }
   else if (decoderType == 0)  { // Loco / Multi Function Decoder
@@ -856,25 +898,38 @@ void DecodePacket(Print &output, int inputPacket, bool isDifferentPacket) {
             }
           }
         break;
-      }      
+      } 
+      outputDecodedData = true;
     }
   }
 
-  // Append packet bits.
-  sbTemp.setPos(21);
-  sbTemp.print(' ');
-  printPacketBits(sbTemp, inputPacket);
-  sbTemp.end();  // terminate string in buffer.
+  if (outputDecodedData) {
 
-  // Get reference to buffer containing results.
-  char *decodedPacket = sbTemp.getString();
+    // If not using HTTP, append decoded packet to packet buffer
+    //  as-is (without binary dump).  It's all that fits on OLED.
+    #if !defined(USE_HTTPSERVER)
+    sbPacketDecode.println(sbTemp.getString());
+    sbPacketDecode.end();
+    #endif
 
-  // Append decoded packet data to string buffer.
-  sbPacketDecode.println(decodedPacket);
-  sbPacketDecode.end();
+    // Append binary dump for Serial and HTTP
+    sbTemp.setPos(21);
+    sbTemp.print(' ');
+    printPacketBits(sbTemp, inputPacket);
+    sbTemp.end();  // terminate string in buffer.
 
-  // Also print to USB serial, and dump packet in hex.
-  Serial.println(decodedPacket);
+    // Get reference to buffer containing results.
+    char *decodedPacket = sbTemp.getString();
+
+    #if defined (USE_HTTPSERVER)
+    // Append decoded packet data and binary dump to string buffer.
+    sbPacketDecode.println(decodedPacket);
+    sbPacketDecode.end();
+    #endif
+
+    // Also print to USB serial, and dump packet in hex.
+    Serial.println(decodedPacket);
+  }
 }
 
 //=======================================================================
@@ -949,6 +1004,11 @@ bool processCommands() {
         Serial.print(F("filter input = "));
         Serial.println(filterInput);
         break;
+      case 's': case 'S':
+        strictMode = (strictMode + 1) % 3;
+        Serial.print(F("NMRA validation level = "));
+        Serial.println(strictMode);
+        break;
       case 'b': case 'B':
         showBitLengths = !showBitLengths;
         Serial.print(F("show bit lengths = "));
@@ -979,6 +1039,7 @@ bool processCommands() {
         Serial.println(F("b = show half-bit counts by length toggle"));
         Serial.println(F("c = show cpu/irc usage in sniffer"));
         Serial.println(F("f = input filter toggle"));
+        Serial.println(F("s = set NMRA compliance strictness (0=none,1=decoder,2=controller)"));
         Serial.println(F("? = help (show this information)"));
         Serial.print(F("ShowLoco "));
         Serial.print(showLoc);
@@ -986,8 +1047,12 @@ bool processCommands() {
         Serial.print(showAcc);
         Serial.print(F(" / RefreshTime "));
         Serial.print(DCCStatistics.getRefreshTime());
-        Serial.print(F(" / BufferSize "));
-        Serial.println(packetHashListSize);
+        Serial.print(F("s / BufferSize "));
+        Serial.print(packetHashListSize);
+        Serial.print(F(" / Filter "));
+        Serial.print(filterInput);
+        Serial.print(F(" / Strict Bit Validation "));
+        Serial.println(strictMode);
         Serial.println();
       break;
     }
