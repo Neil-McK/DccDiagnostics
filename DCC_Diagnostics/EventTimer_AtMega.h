@@ -21,7 +21,7 @@
 #define GPIO_PREFER_SPEED
 #include <DIO2.h>
 
-#define TICKSPERMICROSEC 2   // 2 (0.5us) or 16 (62.5ns)
+#define TICKSPERMICROSEC 16   // 2 (0.5us) or 16 (62.5ns)
 
 #if defined(ARDUINO_UNO_NANO)
   #define ICP_INPUTPIN 8
