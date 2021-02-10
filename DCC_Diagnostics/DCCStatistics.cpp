@@ -128,8 +128,7 @@ void DCCStatisticsClass::writeFullStatistics(Statistics &stats, bool showCpuStat
 // Return a copy of the current set of statistics accumulated.  We could inhibit interrupts
 // while accessing the activeStats data, but the effect on the interrupt code may be more
 // significant than the effect on the resulting counters.
-Statistics DCCStatisticsClass::getAndClearStats() {
-    Statistics stats;
+void DCCStatisticsClass::getAndClearStats(Statistics &stats) {
     memcpy(&stats, (void *)&activeStats, sizeof(activeStats));
     memset((void *)&activeStats, 0, sizeof(activeStats));
     activeStats.minInterruptTime = activeStats.min0 = activeStats.min1 = 65535;
@@ -138,7 +137,6 @@ Statistics DCCStatisticsClass::getAndClearStats() {
     if (maxSpareLoopCountPerSec < stats.spareLoopCount / refreshTime)
         maxSpareLoopCountPerSec = stats.spareLoopCount / refreshTime;
     stats.refreshTime = refreshTime;
-    return stats;
 }
 
 

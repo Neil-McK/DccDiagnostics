@@ -154,11 +154,11 @@ bool calibrated = false;
 unsigned long lastRefresh = 0;
 unsigned int inactivityCount = 0;
 
-// Buffers for decoded packets, used by HTTP and OLED output.
+// Buffer for decoded packets, used by HTTP and OLED output.
 #if defined(USE_HTTPSERVER)
-char packetBuffer[5000] = "";
+char packetBuffer[5000] = ""; // Room for at least 50-60 decoded packets
 #elif defined(USE_OLED)
-char packetBuffer[400] = "";
+char packetBuffer[400] = "";  // Room for at least 20 decoded packets
 #else
 char packetBuffer[1] = "";
 #endif
@@ -225,6 +225,7 @@ void setup() {
   
 void loop() {
   bool somethingDone = false;
+  Statistics stats;
   
   // The first bit runs one second after setup, and completes the initialisation.
   if (!calibrated && millis() >= lastRefresh + 1000) {
@@ -234,7 +235,7 @@ void loop() {
     calibrated = true;
     
     // Read (and discard) stats, then clear them.
-    DCCStatistics.getAndClearStats();
+    DCCStatistics.getAndClearStats(stats);
     clearHashList();
     
     // Start recording data from DCC.
@@ -259,7 +260,7 @@ void loop() {
     if (showHeartBeat) Serial.println('-');
 
     // Snapshot and clear statistics
-    Statistics stats = DCCStatistics.getAndClearStats();
+    DCCStatistics.getAndClearStats(stats);
     clearHashList();
     
     // Print DCC Statistics to the serial USB output.
