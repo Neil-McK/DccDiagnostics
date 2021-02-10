@@ -156,10 +156,10 @@ const char *OledDisplayClass::selectedLine() {
             if (*cptr == '\n') {
                 if (++thisLineNo == firstLine) {
                     cptr++;  // Move to start of next line following newline
-                if (*cptr == '\0')
-                    break;  // Gone off end...
-                else
-                    return cptr; // line valid.
+                    if (*cptr == '\0')
+                        break;  // Gone off end...
+                    else
+                        return cptr; // line valid.
                 }
             }
         }
